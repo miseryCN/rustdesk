@@ -52,6 +52,8 @@ codex exec \
   --sandbox danger-full-access \
   --model "$codex_model" \
   --config "model_reasoning_effort=\"${codex_reasoning_effort}\"" \
+  --config 'shell_environment_policy.inherit="core"' \
+  --config 'shell_environment_policy.exclude=["*TOKEN*", "*KEY*", "*SECRET*", "CI_*"]' \
   --output-last-message "$report_path" \
   "$(<.gitlab/ci/codex-upstream-sync.md)"
 
