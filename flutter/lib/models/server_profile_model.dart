@@ -214,7 +214,9 @@ class ServerProfileModel extends ServerProfileModelBase {
   void markRecentPeersFresh(String profileId) {
     if (_busy || !_recentPeersStale || activeProfileId != profileId) return;
     _recentPeersStale = false;
-    _error = null;
+    if (_error == _recentPeersStaleMessage) {
+      _error = null;
+    }
     notifyListeners();
   }
 

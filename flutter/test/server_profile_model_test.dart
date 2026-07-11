@@ -748,6 +748,63 @@ void main() {
     await currentRefresh;
   });
 
+  test('safe refresh preserves a newer ordinary operation error', () async {
+    final workResponse = _response(
+      activeProfileId: 'work',
+      profiles: [
+        {
+          'id': 'work',
+          'name': 'Work',
+          'id_server': 'work.example.com',
+          'key': 'work-key',
+        },
+      ],
+    );
+    final api = FakeServerProfileApi()..switchResponse = workResponse;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => throw StateError('refresh failed'),
+    );
+    await model.load();
+    await expectLater(
+      model.switchTo('work'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+    final pending = Completer<String>();
+    final recentPeers = RecentPeersModel(loader: (_) => pending.future);
+    final safeRefresh = recentPeers.refreshSafely('work');
+
+    api.addResponse = jsonEncode({
+      'ok': false,
+      'error': 'newer add failure',
+      'config': null,
+    });
+    await expectLater(
+      model.add('Other', 'other.example.com', 'key'),
+      throwsA(isA<ServerProfileException>()),
+    );
+    expect(model.error, 'newer add failure');
+
+    pending.complete(jsonEncode({
+      'ok': true,
+      'profile_id': 'work',
+      'peers': [],
+      'ids': [],
+      'error': '',
+    }));
+    final receipt = await safeRefresh;
+    markRecentPeersFreshFromReceipt(
+      recentPeers: recentPeers,
+      serverProfiles: model,
+      receipt: receipt,
+    );
+
+    expect(model.error, 'newer add failure');
+    await model.retry();
+    expect(api.getCalls, 2,
+        reason: 'fresh recent peers make retry reload profiles');
+  });
+
   test('ordinary add and load preserve a stale recent peers warning', () async {
     final api = FakeServerProfileApi();
     final model = ServerProfileModel(
