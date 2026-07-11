@@ -3787,6 +3787,7 @@ dependencies = [
  "socket2 0.3.19",
  "sodiumoxide",
  "sysinfo",
+ "tempfile",
  "thiserror 1.0.61",
  "tokio",
  "tokio-native-tls",

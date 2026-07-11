@@ -1797,6 +1797,45 @@ pub fn cm_get_clients_length() -> usize {
 
 pub fn main_init(app_dir: String, custom_client_config: String) {
     initialize(&app_dir, &custom_client_config);
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if crate::server_profiles::initialize().is_err() {
+        log::error!("Failed to initialize server profile manager");
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_get_server_profiles() -> String {
+    crate::server_profiles::get()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_add_server_profile(name: String, id_server: String, key: String) -> String {
+    crate::server_profiles::add(&name, &id_server, &key)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_update_server_profile(
+    id: String,
+    name: String,
+    id_server: String,
+    key: String,
+) -> String {
+    crate::server_profiles::update(&id, &name, &id_server, &key)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_delete_server_profile(id: String) -> String {
+    crate::server_profiles::remove(&id)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_switch_server_profile(id: String) -> String {
+    crate::server_profiles::switch(&id)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_recover_server_profiles() -> String {
+    crate::server_profiles::recover()
 }
 
 pub fn main_device_id(id: String) {
