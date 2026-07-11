@@ -152,6 +152,7 @@ abstract class ServerProfileModelBase extends ChangeNotifier {
   String? get error;
 
   Future<void> initialize();
+  Future<void> load();
   Future<void> add(String name, String idServer, String key);
   Future<void> update(String id, String name, String idServer, String key);
   Future<void> remove(String id);
@@ -254,10 +255,14 @@ class ServerProfileModel extends ServerProfileModelBase {
     return tracked;
   }
 
-  Future<void> load() => _run(
-        request: _api.getProfiles,
-        loading: true,
-      );
+  @override
+  Future<void> load() async {
+    await _run(
+      request: _api.getProfiles,
+      loading: true,
+    );
+    _initialized = true;
+  }
 
   @override
   Future<void> add(String name, String idServer, String key) => _run(

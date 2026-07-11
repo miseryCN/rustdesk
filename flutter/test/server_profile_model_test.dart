@@ -102,6 +102,56 @@ void main() {
     expect(model.activeProfileId, 'default');
   });
 
+  test('explicit load refreshes and clears an operation error after initialize',
+      () async {
+    final api = FakeServerProfileApi();
+    final model = ServerProfileModel(api: api);
+    await model.initialize();
+    api.addResponse = jsonEncode({
+      'ok': false,
+      'error': 'temporary failure',
+      'config': null,
+    });
+    await expectLater(
+      model.add('Other', 'other.example.com', 'key'),
+      throwsA(isA<ServerProfileException>()),
+    );
+    expect(model.error, 'temporary failure');
+
+    api.getResponse = _response(
+      profiles: [
+        {
+          'id': 'default',
+          'name': 'Reloaded',
+          'id_server': 'reloaded.example.com',
+          'key': 'reloaded-key',
+        },
+      ],
+    );
+    await model.load();
+
+    expect(api.getCalls, 2);
+    expect(model.error, isNull);
+    expect(model.active.name, 'Reloaded');
+  });
+
+  test('successful explicit load after initialize failure marks initialized',
+      () async {
+    final api = FakeServerProfileApi()..getError = StateError('offline');
+    final model = ServerProfileModel(api: api);
+    await expectLater(
+      model.initialize(),
+      throwsA(isA<ServerProfileException>()),
+    );
+
+    api.getError = null;
+    await model.load();
+    await model.initialize();
+
+    expect(api.getCalls, 2);
+    expect(model.activeProfileId, 'default');
+  });
+
   test('recent peer refresh restores both lists when loading fails', () async {
     final peers = <String>['peer-1'];
     final restPeerIds = <String>['peer-2'];

@@ -33,7 +33,9 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   final removeCalls = <String>[];
   final switchCalls = <String>[];
   int initializeCalls = 0;
+  int loadCalls = 0;
   int recoverCalls = 0;
+  bool _initialized = false;
 
   @override
   ServerProfile get active =>
@@ -67,7 +69,18 @@ class FakeServerProfileModel extends ServerProfileModelBase {
 
   @override
   Future<void> initialize() async {
+    if (_initialized) return;
     initializeCalls += 1;
+    await _performLoad();
+  }
+
+  @override
+  Future<void> load() async {
+    loadCalls += 1;
+    await _performLoad();
+  }
+
+  Future<void> _performLoad() async {
     final error = initializeError;
     if (error != null) {
       errorValue = error.toString();
@@ -80,6 +93,7 @@ class FakeServerProfileModel extends ServerProfileModelBase {
         ..addAll(next);
       _activeProfileId = next.first.id;
     }
+    _initialized = true;
     errorValue = null;
     notifyListeners();
   }
@@ -697,7 +711,8 @@ void main() {
     await tester.tap(find.byKey(const Key('server-profile-retry')));
     await tester.pumpAndSettle();
 
-    expect(model.initializeCalls, 2);
+    expect(model.initializeCalls, 1);
+    expect(model.loadCalls, 1);
     expect(model.activeProfileId, 'active');
     expect(find.text('Active'), findsOneWidget);
   });
@@ -763,7 +778,7 @@ void main() {
     await tester.tap(find.byKey(const Key('server-profile-retry')));
     await tester.pumpAndSettle();
 
-    expect(model.initializeCalls, 0);
+    expect(model.loadCalls, 0);
   });
 
   testWidgets('retry errors use a generic toast and never expose profile keys',
