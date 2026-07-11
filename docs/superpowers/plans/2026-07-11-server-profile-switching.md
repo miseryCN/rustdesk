@@ -193,7 +193,12 @@ cargo test -p hbb_common server_profiles::tests -- --nocapture
 实现下列公开接口；`try_new` 负责 trim 和地址格式校验，名称比较使用 `to_lowercase()`，profile ID 只接受 ASCII 字母、数字、`-`、`_`。ID Server 为空表示公共服务器；非空值拒绝 URL scheme、空白和超出 `u16` 的端口，并使用 `url::Host::parse` 校验主机名、IPv4 或带方括号的 IPv6：
 
 ```rust
-pub const SERVER_PROFILES_VERSION: u32 = 1;
+pub const SERVER_PROFILES_VERSION: u32 = 2;
+
+// v2 separates the stable logical profile ID from peer-data identity namespaces. Previous
+// namespaces remain available to already-running sessions, including sessions in other RustDesk
+// processes whose liveness cannot be proven locally. They therefore have no count or age cap and
+// are removed only when the logical profile is deleted.
 pub const DEFAULT_SERVER_PROFILE_ID: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

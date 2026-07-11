@@ -12,7 +12,7 @@ String _response({
     'ok': true,
     'error': '',
     'config': {
-      'version': 1,
+      'version': 2,
       'active_profile_id': activeProfileId,
       'profiles': profiles ??
           [
@@ -178,7 +178,7 @@ void main() {
   test('parses a successful response and resolves the active profile', () {
     final state = parseServerProfilesResponse(_response());
 
-    expect(state.version, 1);
+    expect(state.version, 2);
     expect(state.activeProfileId, 'default');
     expect(state.active.name, 'Default');
     expect(state.active.idServer, 'default.example.com');
@@ -249,7 +249,7 @@ void main() {
 
   test('rejects unsupported, empty, and duplicate profile configs', () {
     Map<String, Object?> config({
-      int version = 1,
+      int version = 2,
       List<Map<String, Object?>> profiles = const [],
     }) =>
         {
@@ -269,7 +269,7 @@ void main() {
     };
 
     for (final response in [
-      config(version: 2, profiles: [duplicate]),
+      config(version: 1, profiles: [duplicate]),
       config(),
       config(profiles: [duplicate, duplicate]),
     ]) {

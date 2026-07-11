@@ -67,7 +67,7 @@ class ServerProfile {
 }
 
 class ServerProfilesState {
-  static const supportedVersion = 1;
+  static const supportedVersion = 2;
 
   const ServerProfilesState({
     required this.version,
