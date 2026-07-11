@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter_hbb/models/peer_model.dart';
+import 'package:flutter_hbb/models/recent_peers_refresh_coordinator.dart';
 import 'package:flutter_hbb/models/server_profile_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -580,6 +583,169 @@ void main() {
     expect(refreshes, 3);
     expect(api.getCalls, 1);
     expect(model.error, contains('recent connections could not be refreshed'));
+  });
+
+  test('a safe applied current refresh clears the stale switch warning',
+      () async {
+    final workResponse = _response(
+      activeProfileId: 'work',
+      profiles: [
+        {
+          'id': 'work',
+          'name': 'Work',
+          'id_server': 'work.example.com',
+          'key': 'work-key',
+        },
+      ],
+    );
+    final api = FakeServerProfileApi()..switchResponse = workResponse;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => throw StateError('refresh failed'),
+    );
+    await model.load();
+    await expectLater(
+      model.switchTo('work'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+    var notifications = 0;
+    model.addListener(() => notifications += 1);
+    final recentPeers = RecentPeersModel(
+      loader: (_) async => jsonEncode({
+        'ok': true,
+        'profile_id': 'work',
+        'peers': [],
+        'ids': [],
+        'error': '',
+      }),
+    );
+
+    final receipt = await recentPeers.refreshSafely('work');
+    markRecentPeersFreshFromReceipt(
+      recentPeers: recentPeers,
+      serverProfiles: model,
+      receipt: receipt,
+    );
+
+    expect(model.error, isNull);
+    expect(notifications, 1);
+  });
+
+  test('a different profile or busy transaction cannot clear stale warning',
+      () async {
+    final workResponse = _response(
+      activeProfileId: 'work',
+      profiles: [
+        {
+          'id': 'work',
+          'name': 'Work',
+          'id_server': 'work.example.com',
+          'key': 'work-key',
+        },
+      ],
+    );
+    final api = FakeServerProfileApi()..switchResponse = workResponse;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => throw StateError('refresh failed'),
+    );
+    await model.load();
+    await expectLater(
+      model.switchTo('work'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+    final recentPeers = RecentPeersModel(
+      loader: (profileId) async => jsonEncode({
+        'ok': true,
+        'profile_id': profileId,
+        'peers': [],
+        'ids': [],
+        'error': '',
+      }),
+    );
+
+    final differentReceipt = await recentPeers.refreshSafely('default');
+    markRecentPeersFreshFromReceipt(
+      recentPeers: recentPeers,
+      serverProfiles: model,
+      receipt: differentReceipt,
+    );
+    expect(model.error, isNotNull);
+
+    final currentReceipt = await recentPeers.refreshSafely('work');
+    api.pendingGet = Completer<String>();
+    final load = model.load();
+    expect(model.busy, isTrue);
+    markRecentPeersFreshFromReceipt(
+      recentPeers: recentPeers,
+      serverProfiles: model,
+      receipt: currentReceipt,
+    );
+    expect(model.error, isNotNull);
+    api.pendingGet!.complete(workResponse);
+    await load;
+    expect(model.error, isNotNull);
+  });
+
+  test('old epoch and failed safe refreshes cannot clear a new stale warning',
+      () async {
+    final workResponse = _response(
+      activeProfileId: 'work',
+      profiles: [
+        {
+          'id': 'work',
+          'name': 'Work',
+          'id_server': 'work.example.com',
+          'key': 'work-key',
+        },
+      ],
+    );
+    final api = FakeServerProfileApi()..switchResponse = workResponse;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => throw StateError('refresh failed'),
+    );
+    await model.load();
+    await expectLater(
+      model.switchTo('work'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+
+    final old = Completer<String>();
+    final recentPeers = RecentPeersModel(loader: (_) => old.future);
+    final oldRefresh = recentPeers.refreshSafely('work');
+    final currentRefresh = recentPeers.invalidateAndRefresh('work');
+    old.complete(jsonEncode({
+      'ok': true,
+      'profile_id': 'work',
+      'peers': [],
+      'ids': [],
+      'error': '',
+    }));
+    final oldReceipt = await oldRefresh;
+    markRecentPeersFreshFromReceipt(
+      recentPeers: recentPeers,
+      serverProfiles: model,
+      receipt: oldReceipt,
+    );
+    expect(model.error, isNotNull);
+
+    final previousHandler = FlutterError.onError;
+    FlutterError.onError = (_) {};
+    addTearDown(() => FlutterError.onError = previousHandler);
+    final failedPeers = RecentPeersModel(
+      loader: (_) => Future.error(StateError('refresh failed')),
+    );
+    final failedReceipt = await failedPeers.refreshSafely('work');
+    markRecentPeersFreshFromReceipt(
+      recentPeers: failedPeers,
+      serverProfiles: model,
+      receipt: failedReceipt,
+    );
+    expect(model.error, isNotNull);
+
+    // Let the superseding request finish so the model has no pending work.
+    await currentRefresh;
   });
 
   test('ordinary add and load preserve a stale recent peers warning', () async {

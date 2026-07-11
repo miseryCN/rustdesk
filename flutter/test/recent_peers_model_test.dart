@@ -311,12 +311,54 @@ void main() {
       loader: (_) => Future.error(StateError(secret)),
     );
 
-    await model.refreshSafely('home');
+    final receipt = await model.refreshSafely('home');
 
+    expect(receipt.applied, isFalse);
     expect(reports, hasLength(1));
     expect(reports.single.exceptionAsString(), isNot(contains(secret)));
     expect(reports.single.exceptionAsString().toLowerCase(),
         contains('recent connections'));
+  });
+
+  test('safe refresh reports applied only for the current profile epoch',
+      () async {
+    final old = Completer<String>();
+    final current = Completer<String>();
+    var calls = 0;
+    final model = RecentPeersModel(loader: (_) {
+      calls += 1;
+      return calls == 1 ? old.future : current.future;
+    });
+
+    final oldRefresh = model.refreshSafely('home');
+    final currentRefresh = model.invalidateAndRefresh('home');
+    current.complete(_snapshot('home', ['current-peer']));
+    final currentReceipt = await currentRefresh;
+    old.complete(_snapshot('home', ['old-peer']));
+    final oldReceipt = await oldRefresh;
+
+    expect(currentReceipt.applied, isTrue);
+    expect(model.isCurrentReceipt(currentReceipt), isTrue);
+    expect(oldReceipt.applied, isFalse);
+    expect(model.isCurrentReceipt(oldReceipt), isFalse);
+    expect(model.peers.single.id, 'current-peer');
+  });
+
+  test('safe refresh does not apply a mismatched profile response', () async {
+    final previousHandler = FlutterError.onError;
+    final reports = <FlutterErrorDetails>[];
+    FlutterError.onError = reports.add;
+    addTearDown(() => FlutterError.onError = previousHandler);
+    final model = RecentPeersModel(
+      loader: (_) async => _snapshot('office', ['wrong-peer']),
+    );
+
+    final receipt = await model.refreshSafely('home');
+
+    expect(receipt.applied, isFalse);
+    expect(model.isCurrentReceipt(receipt), isFalse);
+    expect(model.peers, isEmpty);
+    expect(reports, hasLength(1));
   });
 
   test('dispose invalidates an in-flight result without applying or notifying',
@@ -331,8 +373,9 @@ void main() {
 
     model.dispose();
     pending.complete(_snapshot('home', ['late-peer']));
-    await refresh;
+    final receipt = await refresh;
 
+    expect(receipt.applied, isFalse);
     expect(notifications, 1);
     expect(model.peers, isEmpty);
     expect(model.debugInFlightCount, 0);

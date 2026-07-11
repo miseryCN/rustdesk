@@ -131,6 +131,7 @@ abstract class ServerProfileModelBase extends ChangeNotifier {
   Future<void> remove(String id);
   Future<void> switchTo(String id);
   Future<void> recover();
+  void markRecentPeersFresh(String profileId);
 }
 
 ServerProfilesState parseServerProfilesResponse(
@@ -208,6 +209,14 @@ class ServerProfileModel extends ServerProfileModelBase {
   bool get busy => _busy;
   @override
   String? get error => _error;
+
+  @override
+  void markRecentPeersFresh(String profileId) {
+    if (_busy || !_recentPeersStale || activeProfileId != profileId) return;
+    _recentPeersStale = false;
+    _error = null;
+    notifyListeners();
+  }
 
   @override
   Future<void> initialize() {

@@ -20,6 +20,7 @@ import 'package:flutter_hbb/models/group_model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
+import 'package:flutter_hbb/models/recent_peers_refresh_coordinator.dart';
 import 'package:flutter_hbb/models/server_model.dart';
 import 'package:flutter_hbb/models/server_profile_model.dart';
 import 'package:flutter_hbb/models/user_model.dart';
@@ -3799,7 +3800,12 @@ class FFI {
         reportRecentPeersLoadFailure();
         return;
       }
-      await recentPeersModel.refreshSafely(profileId);
+      final receipt = await recentPeersModel.refreshSafely(profileId);
+      markRecentPeersFreshFromReceipt(
+        recentPeers: recentPeersModel,
+        serverProfiles: serverProfileModel,
+        receipt: receipt,
+      );
     } catch (_) {
       reportRecentPeersLoadFailure();
     }

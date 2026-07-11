@@ -64,6 +64,14 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   bool get switching => switchingValue;
 
   @override
+  void markRecentPeersFresh(String profileId) {
+    if (busyValue || !recentPeersStale || _activeProfileId != profileId) return;
+    recentPeersStale = false;
+    errorValue = null;
+    notifyListeners();
+  }
+
+  @override
   Future<void> add(String name, String idServer, String key) async {
     addCalls.add((name, idServer, key));
     await pendingAdd?.future;

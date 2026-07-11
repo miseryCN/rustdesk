@@ -181,6 +181,18 @@ class RecentPeersLoadException implements Exception {
   String toString() => message;
 }
 
+class RecentPeersRefreshReceipt {
+  const RecentPeersRefreshReceipt({
+    required this.profileId,
+    required this.epoch,
+    required this.applied,
+  });
+
+  final String profileId;
+  final int epoch;
+  final bool applied;
+}
+
 void reportRecentPeersLoadFailure() {
   try {
     FlutterError.reportError(FlutterErrorDetails(
@@ -330,14 +342,14 @@ class RecentPeersModel extends Peers {
   final RecentPeersSnapshotLoader _loader;
   int _epoch = 0;
   String? _profileId;
-  final Map<String, Future<void>> _inFlight = {};
+  final Map<String, Future<RecentPeersRefreshReceipt>> _inFlight = {};
   bool _disposed = false;
 
   @visibleForTesting
   int get debugInFlightCount => _inFlight.length;
 
-  Future<void> invalidateAndRefresh(String profileId) {
-    if (_disposed) return Future.value();
+  Future<RecentPeersRefreshReceipt> invalidateAndRefresh(String profileId) {
+    if (_disposed) return Future.value(_receipt(profileId, _epoch, false));
     _profileId = profileId;
     _epoch += 1;
     peers = [];
@@ -347,8 +359,8 @@ class RecentPeersModel extends Peers {
     return _startLoad(profileId, _epoch, preserveOnline: false);
   }
 
-  Future<void> refresh(String profileId) {
-    if (_disposed) return Future.value();
+  Future<RecentPeersRefreshReceipt> refresh(String profileId) {
+    if (_disposed) return Future.value(_receipt(profileId, _epoch, false));
     final sameIdentity = _profileId == profileId;
     if (!sameIdentity) {
       return invalidateAndRefresh(profileId);
@@ -356,22 +368,38 @@ class RecentPeersModel extends Peers {
     return _startLoad(profileId, _epoch, preserveOnline: true);
   }
 
-  Future<void> refreshSafely(String profileId) async {
+  Future<RecentPeersRefreshReceipt> refreshSafely(String profileId) async {
+    final pending = refresh(profileId);
+    final requestEpoch = _epoch;
     try {
-      await refresh(profileId);
+      return await pending;
     } catch (_) {
-      if (_disposed) return;
-      reportRecentPeersLoadFailure();
+      if (!_disposed) reportRecentPeersLoadFailure();
+      return _receipt(profileId, requestEpoch, false);
     }
   }
 
-  Future<void> _startLoad(String profileId, int epoch,
+  bool isCurrentReceipt(RecentPeersRefreshReceipt receipt) =>
+      receipt.applied &&
+      !_disposed &&
+      _profileId == receipt.profileId &&
+      _epoch == receipt.epoch;
+
+  RecentPeersRefreshReceipt _receipt(
+          String profileId, int epoch, bool applied) =>
+      RecentPeersRefreshReceipt(
+        profileId: profileId,
+        epoch: epoch,
+        applied: applied,
+      );
+
+  Future<RecentPeersRefreshReceipt> _startLoad(String profileId, int epoch,
       {required bool preserveOnline}) {
     final key = '$epoch\u0000$profileId';
     final pending = _inFlight[key];
     if (pending != null) return pending;
 
-    late final Future<void> tracked;
+    late final Future<RecentPeersRefreshReceipt> tracked;
     tracked = _load(profileId, epoch, preserveOnline).whenComplete(() {
       if (identical(_inFlight[key], tracked)) {
         _inFlight.remove(key);
@@ -381,17 +409,22 @@ class RecentPeersModel extends Peers {
     return tracked;
   }
 
-  Future<void> _load(String profileId, int epoch, bool preserveOnline) async {
+  Future<RecentPeersRefreshReceipt> _load(
+      String profileId, int epoch, bool preserveOnline) async {
     late final String response;
     try {
       response = await _loader(profileId);
     } catch (_) {
-      if (_disposed) return;
+      if (_disposed) return _receipt(profileId, epoch, false);
       rethrow;
     }
-    if (_disposed) return;
+    if (_disposed || _profileId != profileId || _epoch != epoch) {
+      return _receipt(profileId, epoch, false);
+    }
     final snapshot = _parseRecentPeersSnapshot(response, profileId);
-    if (_disposed || _profileId != profileId || _epoch != epoch) return;
+    if (_disposed || _profileId != profileId || _epoch != epoch) {
+      return _receipt(profileId, epoch, false);
+    }
 
     if (preserveOnline) {
       final onlineStates = {for (final peer in peers) peer.id: peer.online};
@@ -403,6 +436,7 @@ class RecentPeersModel extends Peers {
     restPeerIds = snapshot.restPeerIds;
     event = UpdateEvent.load;
     notifyListeners();
+    return _receipt(profileId, epoch, true);
   }
 
   @override
