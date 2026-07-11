@@ -177,7 +177,13 @@ fn gen_vcpkg_package(package: &str, ffi_header: &str, generated: &str, regex: &s
 
     let ffi_rs = out_dir.join(generated);
     let exact_file = src_dir.join("generated").join(generated);
-    generate_bindings(&ffi_header, &includes, &ffi_rs, &exact_file, regex);
+
+    // Use pre-generated bindings if available (for MSVC compatibility)
+    if exact_file.exists() {
+        fs::copy(&exact_file, &ffi_rs).unwrap();
+    } else {
+        generate_bindings(&ffi_header, &includes, &ffi_rs, &exact_file, regex);
+    }
 }
 
 // If you have problems installing ffmpeg, you can download $VCPKG_ROOT/installed from ci
