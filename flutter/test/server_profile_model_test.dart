@@ -151,30 +151,6 @@ void main() {
     expect(model.activeProfileId, 'default');
   });
 
-  test('recent peer refresh restores both lists when loading fails', () async {
-    final peers = <String>['peer-1'];
-    final restPeerIds = <String>['peer-2'];
-    var notifications = 0;
-
-    await expectLater(
-      refreshRecentPeersTransaction(
-        peers: peers,
-        restPeerIds: restPeerIds,
-        notify: () => notifications += 1,
-        load: () async {
-          expect(peers, isEmpty);
-          expect(restPeerIds, isEmpty);
-          throw StateError('load failed');
-        },
-      ),
-      throwsStateError,
-    );
-
-    expect(peers, ['peer-1']);
-    expect(restPeerIds, ['peer-2']);
-    expect(notifications, 2);
-  });
-
   test('parses a successful response and resolves the active profile', () {
     final state = parseServerProfilesResponse(_response());
 
@@ -518,20 +494,13 @@ void main() {
           },
         ],
       );
-    final peers = <String>['peer-1'];
-    final restPeerIds = <String>['peer-2'];
     late final ServerProfileModel model;
     model = ServerProfileModel(
       api: api,
-      refreshRecentPeers: () => refreshRecentPeersTransaction(
-        peers: peers,
-        restPeerIds: restPeerIds,
-        notify: () {},
-        load: () async {
-          expect(model.activeProfileId, 'work');
-          throw StateError('refresh failed');
-        },
-      ),
+      refreshRecentPeers: () async {
+        expect(model.activeProfileId, 'work');
+        throw StateError('refresh failed');
+      },
     );
     await model.load();
 
@@ -547,8 +516,6 @@ void main() {
     );
 
     expect(model.activeProfileId, 'work');
-    expect(peers, ['peer-1']);
-    expect(restPeerIds, ['peer-2']);
     expect(model.error, contains('recent connections could not be refreshed'));
     expect(model.switching, isFalse);
   });

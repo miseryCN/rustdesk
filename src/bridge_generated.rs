@@ -2786,6 +2786,22 @@ fn wire_main_peer_exists_impl(port_: MessagePort, id: impl Wire2Api<String> + Un
         },
     )
 }
+fn wire_main_load_recent_peers_snapshot_impl(
+    port_: MessagePort,
+    profile_id: impl Wire2Api<String> + UnwindSafe,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap::<_, _, _, String>(
+        WrapInfo {
+            debug_name: "main_load_recent_peers_snapshot",
+            port: Some(port_),
+            mode: FfiCallMode::Normal,
+        },
+        move || {
+            let api_profile_id = profile_id.wire2api();
+            move |task_callback| Ok(main_load_recent_peers_snapshot(api_profile_id))
+        },
+    )
+}
 fn wire_main_load_recent_peers_impl(port_: MessagePort) {
     FLUTTER_RUST_BRIDGE_HANDLER.wrap::<_, _, _, ()>(
         WrapInfo {

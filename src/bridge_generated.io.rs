@@ -1249,6 +1249,14 @@ pub extern "C" fn wire_main_peer_exists(port_: i64, id: *mut wire_uint_8_list) {
 }
 
 #[no_mangle]
+pub extern "C" fn wire_main_load_recent_peers_snapshot(
+    port_: i64,
+    profile_id: *mut wire_uint_8_list,
+) {
+    wire_main_load_recent_peers_snapshot_impl(port_, profile_id)
+}
+
+#[no_mangle]
 pub extern "C" fn wire_main_load_recent_peers(port_: i64) {
     wire_main_load_recent_peers_impl(port_)
 }

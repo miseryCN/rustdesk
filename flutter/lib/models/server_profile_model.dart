@@ -18,31 +18,6 @@ abstract interface class ServerProfileApi {
   Future<String> recoverProfiles();
 }
 
-Future<void> refreshRecentPeersTransaction<T>({
-  required List<T> peers,
-  required List<String> restPeerIds,
-  required VoidCallback notify,
-  required Future<void> Function() load,
-}) async {
-  final previousPeers = List<T>.of(peers);
-  final previousRestPeerIds = List<String>.of(restPeerIds);
-  peers.clear();
-  restPeerIds.clear();
-  notify();
-  try {
-    await load();
-  } catch (_) {
-    peers
-      ..clear()
-      ..addAll(previousPeers);
-    restPeerIds
-      ..clear()
-      ..addAll(previousRestPeerIds);
-    notify();
-    rethrow;
-  }
-}
-
 class ServerProfile {
   const ServerProfile({
     required this.id,

@@ -1339,7 +1339,7 @@ class FfiModel with ChangeNotifier {
     cachedPeerData.peerInfo.remove('resolutions');
 
     // Recent peer is updated by handle_peer_info(ui_session_interface.rs) --> handle_peer_info(client.rs) --> save_config(client.rs)
-    bind.mainLoadRecentPeers();
+    parent.target?.refreshRecentPeers();
 
     parent.target?.dialogManager.dismissAll();
     _pi.version = evt['version'];
@@ -3690,17 +3690,6 @@ class _RustdeskServerProfileApi implements ServerProfileApi {
   Future<String> recoverProfiles() => bind.mainRecoverServerProfiles();
 }
 
-class _ServerProfileRecentPeers extends Peers {
-  _ServerProfileRecentPeers()
-      : super(
-          name: PeersModelName.recent,
-          loadEvent: LoadEvent.recent,
-          getInitPeers: null,
-        );
-
-  void notifyForServerProfile() => notifyListeners();
-}
-
 /// Flutter state manager and data communication with the Rust core.
 class FFI {
   var id = '';
@@ -3729,7 +3718,7 @@ class FFI {
   late final ElevationModel elevationModel; // session
   late final CmFileModel cmFileModel; // cm
   late final TextureModel textureModel; //session
-  late final Peers recentPeersModel; // global
+  late final RecentPeersModel recentPeersModel; // global
   late final Peers favoritePeersModel; // global
   late final Peers lanPeersModel; // global
   late final ServerProfileModel serverProfileModel; // global
@@ -3759,7 +3748,10 @@ class FFI {
     elevationModel = ElevationModel(WeakReference(this));
     cmFileModel = CmFileModel(WeakReference(this));
     textureModel = TextureModel(WeakReference(this));
-    final recentPeers = _ServerProfileRecentPeers();
+    final recentPeers = RecentPeersModel(
+      loader: (profileId) =>
+          bind.mainLoadRecentPeersSnapshot(profileId: profileId),
+    );
     recentPeersModel = recentPeers;
     favoritePeersModel = Peers(
         name: PeersModelName.favorite,
@@ -3769,13 +3761,28 @@ class FFI {
         name: PeersModelName.lan, loadEvent: LoadEvent.lan, getInitPeers: null);
     serverProfileModel = ServerProfileModel(
       api: _RustdeskServerProfileApi(),
-      refreshRecentPeers: () => refreshRecentPeersTransaction(
-        peers: recentPeers.peers,
-        restPeerIds: recentPeers.restPeerIds,
-        notify: recentPeers.notifyForServerProfile,
-        load: bind.mainLoadRecentPeers,
-      ),
+      refreshRecentPeers: () => refreshRecentPeers(invalidate: true),
     );
+  }
+
+  Future<void> refreshRecentPeers({bool invalidate = false}) async {
+    if (!isDesktop) {
+      await bind.mainLoadRecentPeers();
+      return;
+    }
+    if (serverProfileModel.activeProfileId == null) {
+      await serverProfileModel.initialize();
+    }
+    final profileId = serverProfileModel.activeProfileId;
+    if (profileId == null) {
+      throw const ServerProfileException(
+          'Server profiles have not been loaded.');
+    }
+    if (invalidate) {
+      await recentPeersModel.invalidateAndRefresh(profileId);
+    } else {
+      await recentPeersModel.refresh(profileId);
+    }
   }
 
   /// Mobile reuse FFI

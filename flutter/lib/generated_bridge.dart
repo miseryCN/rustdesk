@@ -904,6 +904,11 @@ abstract class Rustdesk {
 
   FlutterRustBridgeTaskConstMeta get kMainPeerExistsConstMeta;
 
+  Future<String> mainLoadRecentPeersSnapshot(
+      {required String profileId, dynamic hint});
+
+  FlutterRustBridgeTaskConstMeta get kMainLoadRecentPeersSnapshotConstMeta;
+
   Future<void> mainLoadRecentPeers({dynamic hint});
 
   FlutterRustBridgeTaskConstMeta get kMainLoadRecentPeersConstMeta;
@@ -4953,6 +4958,25 @@ class RustdeskImpl implements Rustdesk {
       const FlutterRustBridgeTaskConstMeta(
         debugName: "main_peer_exists",
         argNames: ["id"],
+      );
+
+  Future<String> mainLoadRecentPeersSnapshot(
+      {required String profileId, dynamic hint}) {
+    var arg0 = _platform.api2wire_String(profileId);
+    return _platform.executeNormal(FlutterRustBridgeTask(
+      callFfi: (port_) =>
+          _platform.inner.wire_main_load_recent_peers_snapshot(port_, arg0),
+      parseSuccessData: _wire2api_String,
+      constMeta: kMainLoadRecentPeersSnapshotConstMeta,
+      argValues: [profileId],
+      hint: hint,
+    ));
+  }
+
+  FlutterRustBridgeTaskConstMeta get kMainLoadRecentPeersSnapshotConstMeta =>
+      const FlutterRustBridgeTaskConstMeta(
+        debugName: "main_load_recent_peers_snapshot",
+        argNames: ["profileId"],
       );
 
   Future<void> mainLoadRecentPeers({dynamic hint}) {
@@ -11512,6 +11536,24 @@ class RustdeskWire implements FlutterRustBridgeWireBase {
               ffi.Pointer<wire_uint_8_list>)>>('wire_main_peer_exists');
   late final _wire_main_peer_exists = _wire_main_peer_existsPtr
       .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
+
+  void wire_main_load_recent_peers_snapshot(
+    int port_,
+    ffi.Pointer<wire_uint_8_list> profile_id,
+  ) {
+    return _wire_main_load_recent_peers_snapshot(
+      port_,
+      profile_id,
+    );
+  }
+
+  late final _wire_main_load_recent_peers_snapshotPtr = _lookup<
+          ffi.NativeFunction<
+              ffi.Void Function(ffi.Int64, ffi.Pointer<wire_uint_8_list>)>>(
+      'wire_main_load_recent_peers_snapshot');
+  late final _wire_main_load_recent_peers_snapshot =
+      _wire_main_load_recent_peers_snapshotPtr
+          .asFunction<void Function(int, ffi.Pointer<wire_uint_8_list>)>();
 
   void wire_main_load_recent_peers(
     int port_,

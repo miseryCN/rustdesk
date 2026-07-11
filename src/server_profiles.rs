@@ -240,6 +240,15 @@ impl ServerProfileManager {
         self.config.active_peer_namespace()
     }
 
+    fn peer_namespace_for(&self, profile_id: &str) -> ResultType<&str> {
+        self.config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .map(|profile| profile.peer_namespace_id.as_str())
+            .ok_or_else(|| anyhow!("server profile does not exist: {profile_id}"))
+    }
+
     fn add(&mut self, name: &str, id_server: &str, key: &str) -> ResultType<ServerProfilesConfig> {
         self.ensure_healthy()?;
         let profile = ServerProfile::try_new(name, id_server, key)?;
@@ -578,6 +587,26 @@ pub(crate) fn capture_active_peer_namespace() -> ResultType<String> {
     })?;
     manager.ensure_healthy()?;
     Ok(manager.active_peer_namespace()?.to_owned())
+}
+
+pub(crate) fn with_peer_namespace<T>(
+    profile_id: &str,
+    operation: impl FnOnce(&str) -> ResultType<T>,
+) -> ResultType<T> {
+    let state = MANAGER
+        .lock()
+        .map_err(|_| anyhow!("server profile manager lock is poisoned"))?;
+    let manager = state.manager.as_ref().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            state
+                .init_error
+                .as_deref()
+                .unwrap_or("server profile manager is not initialized")
+        )
+    })?;
+    manager.ensure_healthy()?;
+    operation(manager.peer_namespace_for(profile_id)?)
 }
 
 pub(crate) fn retired_peer_namespaces() -> ResultType<Vec<String>> {
@@ -1250,6 +1279,20 @@ mod tests {
         assert!(!response.contains("peer_namespace"));
         assert!(!response.contains("internal-current"));
         assert!(!response.contains("internal-retired"));
+    }
+
+    #[test]
+    fn manager_resolves_current_namespace_from_logical_profile_id() {
+        let mut fixture = fixture();
+        fixture.manager.config.profiles[0].peer_namespace_id = "current-space".to_owned();
+        fixture.manager.config.profiles[0].retired_peer_namespace_ids =
+            vec!["retired-space".to_owned()];
+
+        assert_eq!(
+            fixture.manager.peer_namespace_for("home").unwrap(),
+            "current-space"
+        );
+        assert!(fixture.manager.peer_namespace_for("missing").is_err());
     }
 
     #[test]

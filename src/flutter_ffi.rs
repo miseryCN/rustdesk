@@ -1616,6 +1616,65 @@ fn load_recent_peers(
     peers_next.1
 }
 
+#[derive(serde_derive::Serialize)]
+struct RecentPeersSnapshot {
+    ok: bool,
+    profile_id: String,
+    peers: Vec<HashMap<&'static str, String>>,
+    ids: Vec<String>,
+    error: String,
+}
+
+fn recent_peers_snapshot_with<Load>(profile_id: &str, load: Load) -> String
+where
+    Load: FnOnce(&str) -> ResultType<Vec<HashMap<&'static str, String>>>,
+{
+    let result = load(profile_id);
+    let snapshot = match result {
+        Ok(peers) => RecentPeersSnapshot {
+            ok: true,
+            profile_id: profile_id.to_owned(),
+            peers,
+            ids: Vec::new(),
+            error: String::new(),
+        },
+        Err(error) => RecentPeersSnapshot {
+            ok: false,
+            profile_id: profile_id.to_owned(),
+            peers: Vec::new(),
+            ids: Vec::new(),
+            error: error.to_string(),
+        },
+    };
+    serde_json::to_string(&snapshot).unwrap_or_else(|_| {
+        format!(
+            r#"{{"ok":false,"profile_id":{},"peers":[],"ids":[],"error":"failed to serialize recent connections"}}"#,
+            serde_json::to_string(profile_id).unwrap_or_else(|_| "\"\"".to_owned())
+        )
+    })
+}
+
+pub fn main_load_recent_peers_snapshot(profile_id: String) -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        return recent_peers_snapshot_with(&profile_id, |logical_profile_id| {
+            crate::server_profiles::with_peer_namespace(logical_profile_id, |namespace| {
+                let peers = PeerConfig::try_peers_for(namespace, None)?
+                    .into_iter()
+                    .map(|(id, _, peer)| peer_to_map(id, peer))
+                    .collect();
+                Ok(peers)
+            })
+        });
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    recent_peers_snapshot_with(&profile_id, |_| {
+        Err(hbb_common::anyhow::anyhow!(
+            "server profiles are unavailable on this platform"
+        ))
+    })
+}
+
 pub fn main_load_recent_peers() {
     let push_to_flutter = |peers, ids| {
         let mut data = HashMap::from([("name", "load_recent_peers".to_owned()), ("peers", peers)]);
@@ -3433,6 +3492,38 @@ mod stored_peer_batch_profile_tests {
             .as_str()
             .is_some_and(|error| !error.is_empty()));
         assert!(!response.contains("key"));
+    }
+
+    #[test]
+    fn recent_snapshot_uses_resolved_namespace_not_runtime_active_namespace() {
+        let response = recent_peers_snapshot_with("home", |logical_profile_id| {
+            assert_eq!(logical_profile_id, "home");
+            Ok(vec![HashMap::from([
+                ("id", "home-peer".to_owned()),
+                ("platform", "Linux".to_owned()),
+            ])])
+        });
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["profile_id"], "home");
+        assert_eq!(value["peers"][0]["id"], "home-peer");
+        assert_eq!(value["ids"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn recent_snapshot_distinguishes_empty_from_storage_failure() {
+        let empty = recent_peers_snapshot_with("home", |_| Ok(Vec::new()));
+        let failed = recent_peers_snapshot_with("home", |_| {
+            Err(hbb_common::anyhow::anyhow!("peer directory unavailable"))
+        });
+        let empty: serde_json::Value = serde_json::from_str(&empty).unwrap();
+        let failed: serde_json::Value = serde_json::from_str(&failed).unwrap();
+
+        assert_eq!(empty["ok"], true);
+        assert_eq!(empty["peers"], serde_json::json!([]));
+        assert_eq!(failed["ok"], false);
+        assert!(failed["error"].as_str().unwrap().contains("unavailable"));
     }
 
     #[test]

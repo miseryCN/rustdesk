@@ -805,7 +805,7 @@ abstract class BasePeerCard extends StatelessWidget {
           switch (tab) {
             case PeerTabIndex.recent:
               await bind.mainRemovePeer(id: id);
-              bind.mainLoadRecentPeers();
+              gFFI.refreshRecentPeers();
               break;
             case PeerTabIndex.fav:
               final favs = (await bind.mainGetFav()).toList();
@@ -1017,7 +1017,7 @@ class RecentPeerCard extends BasePeerCard {
 
   @protected
   @override
-  void _update() => bind.mainLoadRecentPeers();
+  void _update() => gFFI.refreshRecentPeers();
 }
 
 class FavoritePeerCard extends BasePeerCard {
