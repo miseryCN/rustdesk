@@ -501,6 +501,27 @@ void main() {
     expect(find.text('translated:Key'), findsOneWidget);
   });
 
+  testWidgets('editor fields have space for floating labels', (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(tester, model);
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+
+    final nameBottom =
+        tester.getBottomLeft(find.byKey(const Key('profile-name'))).dy;
+    final idServerTop =
+        tester.getTopLeft(find.byKey(const Key('profile-id-server'))).dy;
+    final idServerBottom =
+        tester.getBottomLeft(find.byKey(const Key('profile-id-server'))).dy;
+    final keyTop = tester.getTopLeft(find.byKey(const Key('profile-key'))).dy;
+
+    expect(idServerTop - nameBottom, greaterThanOrEqualTo(12));
+    expect(keyTop - idServerBottom, greaterThanOrEqualTo(12));
+  });
+
   testWidgets('desktop enter submits and escape cancels the editor',
       (tester) async {
     final model = FakeServerProfileModel(
