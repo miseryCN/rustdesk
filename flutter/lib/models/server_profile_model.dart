@@ -151,6 +151,7 @@ abstract class ServerProfileModelBase extends ChangeNotifier {
   bool get busy;
   String? get error;
 
+  Future<void> initialize();
   Future<void> add(String name, String idServer, String key);
   Future<void> update(String id, String name, String idServer, String key);
   Future<void> remove(String id);
@@ -233,6 +234,7 @@ class ServerProfileModel extends ServerProfileModelBase {
   @override
   String? get error => _error;
 
+  @override
   Future<void> initialize() {
     if (_initialized) return Future.value();
     final pending = _initializeFuture;

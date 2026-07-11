@@ -11,6 +11,10 @@ typedef OpenServerProfileSettings = Future<void> Function(
   BuildContext context,
   ServerProfileModelBase model,
 );
+typedef ConfirmServerProfileRecovery = void Function(
+  Future<void> Function() action,
+  String title,
+);
 
 class ServerProfileSelector extends StatelessWidget {
   const ServerProfileSelector({
@@ -19,12 +23,14 @@ class ServerProfileSelector extends StatelessWidget {
     this.translator,
     this.showToast,
     this.openSettings,
+    this.confirmRecovery,
   });
 
   final ServerProfileModelBase model;
   final String Function(String value)? translator;
   final ServerProfileToast? showToast;
   final OpenServerProfileSettings? openSettings;
+  final ConfirmServerProfileRecovery? confirmRecovery;
 
   String _tr(String value) => translator?.call(value) ?? translate(value);
 
@@ -32,6 +38,19 @@ class ServerProfileSelector extends StatelessWidget {
     if (choice.settings) {
       final opener = openSettings ?? _openSettings;
       await opener(context, model);
+      return;
+    }
+    if (choice.retry) {
+      await _runSafe(model.initialize);
+      return;
+    }
+    if (choice.recover) {
+      final confirm = confirmRecovery;
+      if (confirm != null) {
+        confirm(_recover, _tr('Confirmation'));
+      } else {
+        _defaultConfirmRecovery(context, _recover, _tr('Confirmation'));
+      }
       return;
     }
     final id = choice.profileId;
@@ -42,6 +61,44 @@ class ServerProfileSelector extends StatelessWidget {
       final message = _redactProfileKeys(_safeMessage(error), model.profiles);
       (showToast ?? showToastMessage)(_tr(message));
     }
+  }
+
+  Future<void> _runSafe(Future<void> Function() operation) async {
+    if (model.busy) return;
+    try {
+      await operation();
+    } catch (_) {
+      (showToast ?? showToastMessage)(_tr('Failed'));
+    }
+  }
+
+  Future<void> _recover() => _runSafe(model.recover);
+
+  void _defaultConfirmRecovery(
+    BuildContext context,
+    Future<void> Function() action,
+    String title,
+  ) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text('${_tr('Restore')}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(_tr('Cancel')),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await action();
+            },
+            child: Text(_tr('OK')),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openSettings(
@@ -68,7 +125,7 @@ class ServerProfileSelector extends StatelessWidget {
   }
 
   Widget _buildSelector(BuildContext context, SvcStatus status) {
-    final enabled = !model.busy && model.profiles.isNotEmpty;
+    final enabled = !model.busy;
     return Builder(
       builder: (anchorContext) => InkWell(
         key: const Key('server-profile-selector'),
@@ -128,7 +185,9 @@ class ServerProfileSelector extends StatelessWidget {
   }
 
   String _activeName() {
-    if (model.loading || model.profiles.isEmpty) return _tr('Loading...');
+    if (model.loading) return _tr('Waiting');
+    if (model.error != null) return _tr('Error');
+    if (model.profiles.isEmpty) return _tr('not_ready_status');
     final activeId = model.activeProfileId;
     for (final profile in model.profiles) {
       if (profile.id == activeId) return profile.name;
@@ -195,6 +254,34 @@ class ServerProfileSelector extends StatelessWidget {
               ],
             ),
           ),
+        if (model.profiles.isEmpty || model.error != null)
+          PopupMenuItem<_ProfileMenuChoice>(
+            key: const Key('server-profile-retry'),
+            value: const _ProfileMenuChoice.retry(),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 28,
+                  child: Icon(Icons.refresh_rounded, size: 18),
+                ),
+                Text(_tr('Retry')),
+              ],
+            ),
+          ),
+        if (model.profiles.isEmpty || model.error != null)
+          PopupMenuItem<_ProfileMenuChoice>(
+            key: const Key('server-profile-recover'),
+            value: const _ProfileMenuChoice.recover(),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 28,
+                  child: Icon(Icons.restore_rounded, size: 18),
+                ),
+                Text(_tr('Restore')),
+              ],
+            ),
+          ),
         const PopupMenuDivider(),
         PopupMenuItem<_ProfileMenuChoice>(
           key: const Key('server-profile-settings'),
@@ -246,13 +333,30 @@ class _StatusDot extends StatelessWidget {
 }
 
 class _ProfileMenuChoice {
-  const _ProfileMenuChoice.profile(this.profileId) : settings = false;
+  const _ProfileMenuChoice.profile(this.profileId)
+      : settings = false,
+        retry = false,
+        recover = false;
   const _ProfileMenuChoice.settings()
       : profileId = null,
-        settings = true;
+        settings = true,
+        retry = false,
+        recover = false;
+  const _ProfileMenuChoice.retry()
+      : profileId = null,
+        settings = false,
+        retry = true,
+        recover = false;
+  const _ProfileMenuChoice.recover()
+      : profileId = null,
+        settings = false,
+        retry = false,
+        recover = true;
 
   final String? profileId;
   final bool settings;
+  final bool retry;
+  final bool recover;
 }
 
 String _safeMessage(Object error) {

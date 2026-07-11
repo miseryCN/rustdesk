@@ -12,7 +12,7 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   FakeServerProfileModel({
     required List<ServerProfile> profiles,
     required String activeProfileId,
-  })  : _profiles = profiles,
+  })  : _profiles = List.of(profiles),
         _activeProfileId = activeProfileId;
 
   final List<ServerProfile> _profiles;
@@ -23,12 +23,17 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   String? errorValue;
   Object? addError;
   Object? switchError;
+  Object? initializeError;
   Completer<void>? pendingAdd;
   Completer<void>? pendingSwitch;
+  List<ServerProfile>? initializeProfiles;
+  List<ServerProfile>? recoverProfiles;
   final addCalls = <(String, String, String)>[];
   final updateCalls = <(String, String, String, String)>[];
   final removeCalls = <String>[];
   final switchCalls = <String>[];
+  int initializeCalls = 0;
+  int recoverCalls = 0;
 
   @override
   ServerProfile get active =>
@@ -61,7 +66,37 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   }
 
   @override
-  Future<void> recover() async {}
+  Future<void> initialize() async {
+    initializeCalls += 1;
+    final error = initializeError;
+    if (error != null) {
+      errorValue = error.toString();
+      throw error;
+    }
+    final next = initializeProfiles;
+    if (next != null) {
+      _profiles
+        ..clear()
+        ..addAll(next);
+      _activeProfileId = next.first.id;
+    }
+    errorValue = null;
+    notifyListeners();
+  }
+
+  @override
+  Future<void> recover() async {
+    recoverCalls += 1;
+    final next = recoverProfiles;
+    if (next != null) {
+      _profiles
+        ..clear()
+        ..addAll(next);
+      _activeProfileId = next.first.id;
+    }
+    errorValue = null;
+    notifyListeners();
+  }
 
   @override
   Future<void> remove(String id) async {
@@ -480,6 +515,7 @@ void main() {
     WidgetTester tester,
     FakeServerProfileModel model, {
     ValueChanged<String>? toast,
+    ConfirmServerProfileRecovery? confirmRecovery,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -488,6 +524,7 @@ void main() {
             model: model,
             translator: (value) => 'translated:$value',
             showToast: toast,
+            confirmRecovery: confirmRecovery,
           ),
         ),
       ),
@@ -619,7 +656,7 @@ void main() {
       ..loadingValue = true;
     await pumpSelector(tester, model);
 
-    expect(find.text('translated:Loading...'), findsOneWidget);
+    expect(find.text('translated:Waiting'), findsOneWidget);
     expect(
       tester
           .widget<InkWell>(
@@ -628,6 +665,127 @@ void main() {
           .onTap,
       isNull,
     );
+  });
+
+  testWidgets('failed initialization can be retried from the empty-state menu',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: const [],
+      activeProfileId: 'missing',
+    )..initializeError = const ServerProfileException('offline');
+    await expectLater(
+      model.initialize(),
+      throwsA(isA<ServerProfileException>()),
+    );
+    await pumpSelector(tester, model);
+
+    expect(find.text('translated:Error'), findsOneWidget);
+    expect(
+      tester
+          .widget<InkWell>(find.byKey(const Key('server-profile-selector')))
+          .onTap,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('server-profile-retry')), findsOneWidget);
+    expect(find.byKey(const Key('server-profile-settings')), findsOneWidget);
+
+    model
+      ..initializeError = null
+      ..initializeProfiles = profiles;
+    await tester.tap(find.byKey(const Key('server-profile-retry')));
+    await tester.pumpAndSettle();
+
+    expect(model.initializeCalls, 2);
+    expect(model.activeProfileId, 'active');
+    expect(find.text('Active'), findsOneWidget);
+  });
+
+  testWidgets('settings remains available with no loaded profiles',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: const [],
+      activeProfileId: 'missing',
+    )..errorValue = 'unavailable';
+    await pumpSelector(tester, model);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('server-profile-settings')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ServerProfileDialog), findsOneWidget);
+  });
+
+  testWidgets('recover requires confirmation and restores profiles once',
+      (tester) async {
+    Future<void> Function()? confirmedAction;
+    final model = FakeServerProfileModel(
+      profiles: const [],
+      activeProfileId: 'missing',
+    )
+      ..errorValue = 'corrupt'
+      ..recoverProfiles = profiles;
+    await pumpSelector(
+      tester,
+      model,
+      confirmRecovery: (action, _) => confirmedAction = action,
+    );
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('server-profile-recover')));
+    await tester.pumpAndSettle();
+    expect(model.recoverCalls, 0);
+    expect(confirmedAction, isNotNull);
+
+    await confirmedAction!();
+    await tester.pumpAndSettle();
+    expect(model.recoverCalls, 1);
+    expect(model.activeProfileId, 'active');
+    expect(find.text('Active'), findsOneWidget);
+  });
+
+  testWidgets('a busy transition prevents a stale retry menu selection',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: const [],
+      activeProfileId: 'missing',
+    )..errorValue = 'offline';
+    await pumpSelector(tester, model);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    model
+      ..busyValue = true
+      ..notifyListeners();
+    await tester.tap(find.byKey(const Key('server-profile-retry')));
+    await tester.pumpAndSettle();
+
+    expect(model.initializeCalls, 0);
+  });
+
+  testWidgets('retry errors use a generic toast and never expose profile keys',
+      (tester) async {
+    final messages = <String>[];
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    )
+      ..errorValue = 'previous failure'
+      ..initializeError = const ServerProfileException(
+        'rejected active-secret',
+      );
+    await pumpSelector(tester, model, toast: messages.add);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('server-profile-retry')));
+    await tester.pumpAndSettle();
+
+    expect(messages, ['translated:Failed']);
+    expect(messages.single, isNot(contains('active-secret')));
   });
 
   testWidgets('responsive header keeps selector and card visible when narrow',
