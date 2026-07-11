@@ -1,151 +1,50 @@
-# Windows 构建修复说明
+# Windows 构建排障说明
 
-本文档记录了在 Windows 环境下构建 RustDesk 时遇到的问题及解决方案。
+本项目保持 RustDesk 当前跨平台基线：Flutter `3.24.5`、Dart `3.5.x`、项目锁定的依赖和默认 AOM `3.12.1`。不要为了某一台 Windows 机器的本地构建而升级 Flutter/Dart、全局降级 AOM，或提交 Windows 生成的 C FFI bindings；这些做法会影响 Linux、macOS、移动端和 CI。
 
-## 环境信息
+完整的 Windows、Linux、macOS 构建步骤见 [AI_AGENT_SERVER_PROFILES.md](AI_AGENT_SERVER_PROFILES.md)。
 
-- OS: Windows 11 Pro 26200
-- Rust: stable-x86_64-pc-windows-msvc (1.96.0)
-- Flutter: 3.41.7
-- Visual Studio: 2022 Community (MSVC 14.41.34120)
-- LLVM: 22.1.8
+## Windows 常见问题
 
-## 问题 1: libclang.dll 缺失
+### 找不到 `libclang.dll`
 
-**现象**: hwcodec 构建时报错 `Unable to find libclang`
-
-**解决**: 安装 LLVM
+安装 LLVM，并在当前 PowerShell 设置：
 
 ```powershell
 winget install LLVM.LLVM
-```
-
-设置环境变量:
-```powershell
 $env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
 ```
 
-## 问题 2: vcpkg 依赖未完整安装
+该变量只影响本机 bindgen；不要因此提交预生成 bindings。
 
-**现象**: `libavutil/pixfmt.h`, `vpx/vp8.h` 等头文件找不到
+### vcpkg 头文件或库找不到
 
-**解决**: 使用 manifest 模式安装依赖
+使用仓库根目录的 manifest 和固定 triplet 安装依赖：
 
 ```powershell
 $env:VCPKG_ROOT = 'C:\src\vcpkg'
-& "$env:VCPKG_ROOT\vcpkg.exe" install --x-install-root="$env:VCPKG_ROOT\installed" --triplet x64-windows-static
+& "$env:VCPKG_ROOT\vcpkg.exe" install `
+  --triplet x64-windows-static `
+  --x-install-root="$env:VCPKG_ROOT\installed"
 ```
 
-注意: ffmpeg 被安装到 `x64-windows` (host triplet) 而非 `x64-windows-static`，需要手动复制头文件和库文件。
+不要手动把 `x64-windows` 的 FFmpeg 文件复制到 `x64-windows-static`。如果 manifest 安装结果不完整，应检查 vcpkg 的构建日志并修复 manifest/triplet 配置。
 
-## 问题 3: aom 版本不兼容
+### 可复现的构建命令
 
-**现象**: `aom_codec_dec_cfg`, `aom_codec_enc_cfg` 等结构体只有 `_address` 字段
-
-**根因**: aom 3.12.1 的头文件在 MSVC 下导致 bindgen 生成 opaque struct
-
-**解决**: 修改 `res/vcpkg/aom/portfile.cmake`，强制使用 aom 3.9.1
-
-```cmake
-# 删除 if(DEFINED ENV{USE_AOM_391}) 条件判断，直接使用 3.9.1
-vcpkg_from_git(
-    OUT_SOURCE_PATH SOURCE_PATH
-    URL "https://aomedia.googlesource.com/aom"
-    REF 8ad484f8a18ed1853c094e7d3a4e023b2a92df28 # 3.9.1
-    ...
-)
-```
-
-## 问题 4: bindgen 在 MSVC 下生成 opaque struct
-
-**现象**: 升级 bindgen 到 0.71 后仍然生成只有 `_address` 字段的结构体
-
-**根因**: bindgen 库版本 (0.71.1) 在 MSVC 环境下解析 aom/vpx/yuv 头文件时生成 opaque struct，但 CLI 版本 (0.72.1) 可以正确生成
-
-**解决**:
-
-1. 升级 scrap 的 bindgen 依赖: `bindgen = "0.65"` -> `bindgen = "0.71"`
-
-2. 使用 bindgen CLI 预生成 bindings 文件到 `libs/scrap/generated/` 目录:
-
-```bash
-bindgen libs/scrap/src/bindings/aom_ffi.h \
-  --allowlist-type "^(aom|AOM|OBU|AV1).*" \
-  --rustified-enum "^(aom|AOM|OBU|AV1).*" \
-  --no-layout-tests --no-doc-comments \
-  -- -I$VCPKG_ROOT/installed/x64-windows-static/include \
-  > libs/scrap/generated/aom_ffi.rs
-
-bindgen libs/scrap/src/bindings/vpx_ffi.h \
-  --allowlist-type "^[vV].*" --rustified-enum "^[vV].*" \
-  --no-layout-tests --no-doc-comments \
-  -- -I$VCPKG_ROOT/installed/x64-windows-static/include \
-  > libs/scrap/generated/vpx_ffi.rs
-
-bindgen libs/scrap/src/bindings/yuv_ffi.h \
-  --allowlist-type ".*" --rustified-enum ".*" \
-  --no-layout-tests --no-doc-comments \
-  -- -I$VCPKG_ROOT/installed/x64-windows-static/include \
-  > libs/scrap/generated/yuv_ffi.rs
-```
-
-3. 修改 `libs/scrap/build.rs`，优先使用预生成的 bindings:
-
-```rust
-fn gen_vcpkg_package(package: &str, ffi_header: &str, generated: &str, regex: &str) {
-    ...
-    let exact_file = src_dir.join("generated").join(generated);
-
-    // Use pre-generated bindings if available (for MSVC compatibility)
-    if exact_file.exists() {
-        fs::copy(&exact_file, &ffi_rs).unwrap();
-    } else {
-        generate_bindings(&ffi_header, &includes, &ffi_rs, &exact_file, regex);
-    }
-}
-```
-
-## 问题 5: Flutter 3.41.7 Breaking Changes
-
-**现象**:
-- `DialogTheme` 类型不匹配
-- `TabBarTheme` 类型不匹配
-- `extended_text` 14.0.0 缺少方法实现
-- `google_fonts` 6.2.1 常量求值错误
-
-**解决**:
-
-1. 修改 `flutter/lib/common.dart`:
-   - `DialogTheme(` -> `DialogThemeData(`
-   - `TabBarTheme(` -> `TabBarThemeData(`
-
-2. 修改 `flutter/pubspec.yaml`:
-   - `extended_text: 14.0.0` -> `extended_text: 15.0.2`
-   - `google_fonts: ^6.2.1` -> `google_fonts: ^6.3.3`
-
-## 修改文件清单
-
-| 文件 | 改动说明 |
-|------|----------|
-| `res/vcpkg/aom/portfile.cmake` | 强制使用 aom 3.9.1 |
-| `libs/scrap/Cargo.toml` | bindgen 0.65 -> 0.71 |
-| `libs/scrap/build.rs` | 优先使用预生成的 bindings |
-| `libs/scrap/generated/*.rs` | 新增预生成的 FFI bindings |
-| `flutter/lib/common.dart` | DialogTheme/TabBarTheme 类型修复 |
-| `flutter/pubspec.yaml` | 更新 extended_text, google_fonts 版本 |
-| `flutter/pubspec.lock` | 依赖锁文件更新 |
-| `Cargo.lock` | 依赖锁文件更新 |
-
-## 构建命令
+`flutter build windows` 只负责 Flutter runner；干净仓库还需要先构建 Rust 动态库。使用项目根目录的构建脚本：
 
 ```powershell
-# 设置环境变量
-$env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
-$env:VCPKG_ROOT = 'C:\src\vcpkg'
-
-# 构建 Flutter Windows 应用
-cd flutter
-flutter build windows --release
+flutter pub get
+py -3 build.py --portable --flutter --skip-portable-pack --hwcodec --vram
 ```
 
-输出路径: `flutter/build/windows/x64/runner/Release/`
+输出目录为：
+
+```text
+flutter\build\windows\x64\runner\Release\
+```
+
+## 本地排障记录
+
+曾有一次本机使用 Flutter `3.41.7` 构建成功，但它要求升级 `google_fonts` 等依赖，已与项目 Flutter `3.24.5` 基线冲突，因此不作为本分支的解决方案。若未来决定正式升级 Flutter，必须同时更新 CI、FRB 生成环境、Windows/Linux/macOS 测试与全部构建文档。
