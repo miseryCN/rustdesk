@@ -159,7 +159,7 @@ class AllPeersLoader {
     _isPeersLoading = true;
 
     if (gFFI.recentPeersModel.peers.isEmpty) {
-      gFFI.refreshRecentPeers();
+      gFFI.refreshRecentPeersSafely();
     }
     if (gFFI.lanPeersModel.peers.isEmpty) {
       bind.mainLoadLanPeers();

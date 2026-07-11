@@ -1667,9 +1667,8 @@ pub fn main_load_recent_peers_snapshot(profile_id: String) -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         return recent_peers_snapshot_with(&profile_id, |logical_profile_id| {
-            crate::server_profiles::with_peer_namespace(logical_profile_id, |namespace| {
-                load_recent_peers_from_namespace(namespace)
-            })
+            let namespace = crate::server_profiles::resolve_peer_namespace(logical_profile_id)?;
+            load_recent_peers_from_namespace(&namespace)
         });
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]

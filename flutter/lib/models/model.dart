@@ -1339,7 +1339,7 @@ class FfiModel with ChangeNotifier {
     cachedPeerData.peerInfo.remove('resolutions');
 
     // Recent peer is updated by handle_peer_info(ui_session_interface.rs) --> handle_peer_info(client.rs) --> save_config(client.rs)
-    parent.target?.refreshRecentPeers();
+    parent.target?.refreshRecentPeersSafely();
 
     parent.target?.dialogManager.dismissAll();
     _pi.version = evt['version'];
@@ -3782,6 +3782,26 @@ class FFI {
       await recentPeersModel.invalidateAndRefresh(profileId);
     } else {
       await recentPeersModel.refresh(profileId);
+    }
+  }
+
+  Future<void> refreshRecentPeersSafely() async {
+    try {
+      if (!isDesktop) {
+        await bind.mainLoadRecentPeers();
+        return;
+      }
+      if (serverProfileModel.activeProfileId == null) {
+        await serverProfileModel.initialize();
+      }
+      final profileId = serverProfileModel.activeProfileId;
+      if (profileId == null) {
+        reportRecentPeersLoadFailure();
+        return;
+      }
+      await recentPeersModel.refreshSafely(profileId);
+    } catch (_) {
+      reportRecentPeersLoadFailure();
     }
   }
 

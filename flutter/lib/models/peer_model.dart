@@ -181,6 +181,18 @@ class RecentPeersLoadException implements Exception {
   String toString() => message;
 }
 
+void reportRecentPeersLoadFailure() {
+  try {
+    FlutterError.reportError(FlutterErrorDetails(
+      exception: const RecentPeersLoadException(
+          'Recent connections could not be refreshed.'),
+      library: 'RustDesk recent connections',
+    ));
+  } catch (_) {
+    debugPrint('Recent connections could not be refreshed.');
+  }
+}
+
 class Peers extends ChangeNotifier {
   final String name;
   final String loadEvent;
@@ -319,28 +331,49 @@ class RecentPeersModel extends Peers {
   int _epoch = 0;
   String? _profileId;
   final Map<String, Future<void>> _inFlight = {};
+  bool _disposed = false;
+
+  @visibleForTesting
+  int get debugInFlightCount => _inFlight.length;
 
   Future<void> invalidateAndRefresh(String profileId) {
+    if (_disposed) return Future.value();
     _profileId = profileId;
     _epoch += 1;
-    return _startLoad(profileId, _epoch);
+    peers = [];
+    restPeerIds = [];
+    event = UpdateEvent.load;
+    notifyListeners();
+    return _startLoad(profileId, _epoch, preserveOnline: false);
   }
 
   Future<void> refresh(String profileId) {
-    if (_profileId != profileId) {
+    if (_disposed) return Future.value();
+    final sameIdentity = _profileId == profileId;
+    if (!sameIdentity) {
       _profileId = profileId;
       _epoch += 1;
     }
-    return _startLoad(profileId, _epoch);
+    return _startLoad(profileId, _epoch, preserveOnline: sameIdentity);
   }
 
-  Future<void> _startLoad(String profileId, int epoch) {
+  Future<void> refreshSafely(String profileId) async {
+    try {
+      await refresh(profileId);
+    } catch (_) {
+      if (_disposed) return;
+      reportRecentPeersLoadFailure();
+    }
+  }
+
+  Future<void> _startLoad(String profileId, int epoch,
+      {required bool preserveOnline}) {
     final key = '$epoch\u0000$profileId';
     final pending = _inFlight[key];
     if (pending != null) return pending;
 
     late final Future<void> tracked;
-    tracked = _load(profileId, epoch).whenComplete(() {
+    tracked = _load(profileId, epoch, preserveOnline).whenComplete(() {
       if (identical(_inFlight[key], tracked)) {
         _inFlight.remove(key);
       }
@@ -349,19 +382,36 @@ class RecentPeersModel extends Peers {
     return tracked;
   }
 
-  Future<void> _load(String profileId, int epoch) async {
-    final response = await _loader(profileId);
+  Future<void> _load(String profileId, int epoch, bool preserveOnline) async {
+    late final String response;
+    try {
+      response = await _loader(profileId);
+    } catch (_) {
+      if (_disposed) return;
+      rethrow;
+    }
+    if (_disposed) return;
     final snapshot = _parseRecentPeersSnapshot(response, profileId);
-    if (_profileId != profileId || _epoch != epoch) return;
+    if (_disposed || _profileId != profileId || _epoch != epoch) return;
 
-    final onlineStates = {for (final peer in peers) peer.id: peer.online};
-    for (final peer in snapshot.peers) {
-      peer.online = onlineStates[peer.id] ?? false;
+    if (preserveOnline) {
+      final onlineStates = {for (final peer in peers) peer.id: peer.online};
+      for (final peer in snapshot.peers) {
+        peer.online = onlineStates[peer.id] ?? false;
+      }
     }
     peers = snapshot.peers;
     restPeerIds = snapshot.restPeerIds;
     event = UpdateEvent.load;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _epoch += 1;
+    _inFlight.clear();
+    super.dispose();
   }
 }
 

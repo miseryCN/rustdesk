@@ -465,7 +465,7 @@ class RecentPeersView extends BasePeersView {
   @override
   Widget build(BuildContext context) {
     final widget = super.build(context);
-    gFFI.refreshRecentPeers();
+    gFFI.refreshRecentPeersSafely();
     return widget;
   }
 }

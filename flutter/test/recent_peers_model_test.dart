@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -214,5 +215,86 @@ void main() {
       );
       expect(model.peers.single.id, '...');
     }
+  });
+
+  test('identity invalidation clears immediately and stays empty on failure',
+      () async {
+    final pending = Completer<String>();
+    final model = RecentPeersModel(loader: (_) => pending.future)
+      ..peers = [Peer.loading()]
+      ..restPeerIds = ['old-rest'];
+    var notifications = 0;
+    model.addListener(() => notifications += 1);
+
+    final refresh = model.invalidateAndRefresh('office');
+
+    expect(model.peers, isEmpty);
+    expect(model.restPeerIds, isEmpty);
+    expect(notifications, 1);
+    pending.complete(jsonEncode({
+      'ok': false,
+      'profile_id': 'office',
+      'peers': [],
+      'ids': [],
+      'error': 'storage unavailable',
+    }));
+    await expectLater(refresh, throwsA(isA<RecentPeersLoadException>()));
+    expect(model.peers, isEmpty);
+    expect(model.restPeerIds, isEmpty);
+    expect(notifications, 1);
+  });
+
+  test('only a normal same-identity refresh inherits online state', () async {
+    final responses = <String>[
+      _snapshot('home', ['same-peer']),
+      _snapshot('home', ['same-peer']),
+      _snapshot('home', ['same-peer']),
+    ];
+    final model = RecentPeersModel(loader: (_) async => responses.removeAt(0));
+    await model.refresh('home');
+    model.peers.single.online = true;
+
+    await model.refresh('home');
+    expect(model.peers.single.online, isTrue);
+
+    await model.invalidateAndRefresh('home');
+    expect(model.peers.single.online, isFalse);
+  });
+
+  test('safe refresh reports one generic Flutter error and never throws',
+      () async {
+    const secret = 'never-report-this-key';
+    final previousHandler = FlutterError.onError;
+    final reports = <FlutterErrorDetails>[];
+    FlutterError.onError = reports.add;
+    addTearDown(() => FlutterError.onError = previousHandler);
+    final model = RecentPeersModel(
+      loader: (_) => Future.error(StateError(secret)),
+    );
+
+    await model.refreshSafely('home');
+
+    expect(reports, hasLength(1));
+    expect(reports.single.exceptionAsString(), isNot(contains(secret)));
+    expect(reports.single.exceptionAsString().toLowerCase(),
+        contains('recent connections'));
+  });
+
+  test('dispose invalidates an in-flight result without applying or notifying',
+      () async {
+    final pending = Completer<String>();
+    final model = RecentPeersModel(loader: (_) => pending.future);
+    var notifications = 0;
+    model.addListener(() => notifications += 1);
+    final refresh = model.refresh('home');
+    expect(model.debugInFlightCount, 1);
+
+    model.dispose();
+    pending.complete(_snapshot('home', ['late-peer']));
+    await refresh;
+
+    expect(notifications, 0);
+    expect(model.peers, isEmpty);
+    expect(model.debugInFlightCount, 0);
   });
 }

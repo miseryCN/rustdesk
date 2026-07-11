@@ -584,10 +584,7 @@ pub(crate) fn capture_active_peer_namespace() -> ResultType<String> {
     Ok(manager.active_peer_namespace()?.to_owned())
 }
 
-pub(crate) fn with_peer_namespace<T>(
-    profile_id: &str,
-    operation: impl FnOnce(&str) -> ResultType<T>,
-) -> ResultType<T> {
+pub(crate) fn resolve_peer_namespace(profile_id: &str) -> ResultType<String> {
     let state = MANAGER
         .lock()
         .map_err(|_| anyhow!("server profile manager lock is poisoned"))?;
@@ -601,7 +598,7 @@ pub(crate) fn with_peer_namespace<T>(
         )
     })?;
     manager.ensure_healthy()?;
-    operation(manager.peer_namespace_for(profile_id)?)
+    Ok(manager.peer_namespace_for(profile_id)?.to_owned())
 }
 
 pub(crate) fn peer_namespace_for_config<'a>(
@@ -1450,6 +1447,52 @@ mod tests {
         );
         capture_thread.join().expect("capture thread");
         *MANAGER.lock().expect("manager lock") = ManagerState::default();
+    }
+
+    #[test]
+    fn snapshot_reader_does_not_hold_manager_lock_during_io() {
+        let fixture = fixture();
+        *MANAGER.lock().expect("manager lock") = ManagerState {
+            root: Some(fixture._root.0.clone()),
+            manager: Some(fixture.manager),
+            init_error: None,
+        };
+        struct ResetManager;
+        impl Drop for ResetManager {
+            fn drop(&mut self) {
+                *MANAGER.lock().expect("manager lock") = ManagerState::default();
+            }
+        }
+        let _reset = ResetManager;
+        let (reader_started_tx, reader_started_rx) = mpsc::channel();
+        let (release_reader_tx, release_reader_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let namespace = resolve_peer_namespace("home").expect("resolve namespace");
+            reader_started_tx
+                .send(namespace)
+                .expect("signal blocked reader");
+            release_reader_rx.recv().expect("release reader");
+        });
+
+        assert_eq!(
+            reader_started_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("reader starts"),
+            "home"
+        );
+        {
+            let mut state = MANAGER
+                .try_lock()
+                .expect("reader must not hold manager lock");
+            state
+                .manager
+                .as_mut()
+                .expect("manager exists")
+                .switch("office")
+                .expect("switch while reader is blocked");
+        }
+        release_reader_tx.send(()).expect("release reader");
+        reader.join().expect("reader thread");
     }
 
     #[test]
