@@ -102,7 +102,7 @@ void main() {
     expect(model.activeProfileId, 'default');
   });
 
-  test('explicit load refreshes and clears an operation error after initialize',
+  test('retry reloads and clears an operation error after initialize',
       () async {
     final api = FakeServerProfileApi();
     final model = ServerProfileModel(api: api);
@@ -128,15 +128,14 @@ void main() {
         },
       ],
     );
-    await model.load();
+    await model.retry();
 
     expect(api.getCalls, 2);
     expect(model.error, isNull);
     expect(model.active.name, 'Reloaded');
   });
 
-  test('successful explicit load after initialize failure marks initialized',
-      () async {
+  test('successful retry after initialize failure marks initialized', () async {
     final api = FakeServerProfileApi()..getError = StateError('offline');
     final model = ServerProfileModel(api: api);
     await expectLater(
@@ -145,7 +144,7 @@ void main() {
     );
 
     api.getError = null;
-    await model.load();
+    await model.retry();
     await model.initialize();
 
     expect(api.getCalls, 2);
@@ -484,6 +483,90 @@ void main() {
     expect(restPeerIds, ['peer-2']);
     expect(model.error, contains('recent connections could not be refreshed'));
     expect(model.switching, isFalse);
+  });
+
+  test('retry refreshes stale recent peers without reloading profiles',
+      () async {
+    final api = FakeServerProfileApi()
+      ..switchResponse = _response(
+        activeProfileId: 'work',
+        profiles: [
+          {
+            'id': 'work',
+            'name': 'Work',
+            'id_server': 'work.example.com',
+            'key': 'work-key',
+          },
+        ],
+      );
+    var refreshes = 0;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () async {
+        refreshes += 1;
+        if (refreshes == 1) throw StateError('refresh failed');
+      },
+    );
+    await model.initialize();
+    await expectLater(
+      model.switchTo('work'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+
+    await model.retry();
+
+    expect(refreshes, 2);
+    expect(api.getCalls, 1);
+    expect(model.activeProfileId, 'work');
+    expect(model.error, isNull);
+  });
+
+  test('failed stale recent retry remains retryable', () async {
+    final api = FakeServerProfileApi();
+    var refreshes = 0;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () async {
+        refreshes += 1;
+        throw StateError('refresh failed');
+      },
+    );
+    await model.initialize();
+    await expectLater(
+      model.switchTo('default'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+
+    await expectLater(
+        model.retry(), throwsA(isA<ServerProfileRefreshException>()));
+    await expectLater(
+        model.retry(), throwsA(isA<ServerProfileRefreshException>()));
+
+    expect(refreshes, 3);
+    expect(api.getCalls, 1);
+    expect(model.error, contains('recent connections could not be refreshed'));
+  });
+
+  test('ordinary add and load preserve a stale recent peers warning', () async {
+    final api = FakeServerProfileApi();
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => throw StateError('refresh failed'),
+    );
+    await model.initialize();
+    await expectLater(
+      model.switchTo('default'),
+      throwsA(isA<ServerProfileRefreshException>()),
+    );
+
+    await model.add('Other', 'other.example.com', 'key');
+    expect(model.error, contains('recent connections could not be refreshed'));
+    await model.load();
+    expect(model.error, contains('recent connections could not be refreshed'));
+
+    await expectLater(
+        model.retry(), throwsA(isA<ServerProfileRefreshException>()));
+    expect(api.getCalls, 2);
   });
 
   test('remove refreshes recent peers exactly once', () async {

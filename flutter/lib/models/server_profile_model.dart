@@ -136,10 +136,7 @@ class ServerProfileException implements Exception {
 }
 
 class ServerProfileRefreshException extends ServerProfileException {
-  const ServerProfileRefreshException()
-      : super(
-          'Server profile configuration changed, but recent connections could not be refreshed.',
-        );
+  const ServerProfileRefreshException() : super(_recentPeersStaleMessage);
 }
 
 abstract class ServerProfileModelBase extends ChangeNotifier {
@@ -153,6 +150,7 @@ abstract class ServerProfileModelBase extends ChangeNotifier {
 
   Future<void> initialize();
   Future<void> load();
+  Future<void> retry();
   Future<void> add(String name, String idServer, String key);
   Future<void> update(String id, String name, String idServer, String key);
   Future<void> remove(String id);
@@ -205,6 +203,7 @@ class ServerProfileModel extends ServerProfileModelBase {
   ServerProfilesState? _state;
   Future<void>? _initializeFuture;
   bool _initialized = false;
+  bool _recentPeersStale = false;
   bool _busy = false;
   bool _loading = false;
   bool _switching = false;
@@ -265,6 +264,12 @@ class ServerProfileModel extends ServerProfileModelBase {
   }
 
   @override
+  Future<void> retry() {
+    if (_recentPeersStale) return _retryRecentPeers();
+    return load();
+  }
+
+  @override
   Future<void> add(String name, String idServer, String key) => _run(
         request: () => _api.addProfile(name, idServer, key),
         loading: true,
@@ -316,7 +321,7 @@ class ServerProfileModel extends ServerProfileModelBase {
     _busy = true;
     _loading = loading;
     _switching = switching;
-    _error = null;
+    _error = _recentPeersStale ? _recentPeersStaleMessage : null;
     notifyListeners();
     try {
       final response = await request();
@@ -327,11 +332,9 @@ class ServerProfileModel extends ServerProfileModelBase {
       _state = nextState;
       notifyListeners();
       if (refreshRecentPeers) {
-        try {
-          await _refreshRecentPeers?.call();
-        } catch (_) {
-          throw const ServerProfileRefreshException();
-        }
+        await _refreshRecentPeersNow();
+      } else if (_recentPeersStale) {
+        _error = _recentPeersStaleMessage;
       }
     } catch (error) {
       final safeError = _safeException(error, sensitiveValues);
@@ -344,7 +347,45 @@ class ServerProfileModel extends ServerProfileModelBase {
       notifyListeners();
     }
   }
+
+  Future<void> _retryRecentPeers() async {
+    if (_busy) {
+      throw const ServerProfileException(
+        'Another server profile operation is already in progress.',
+      );
+    }
+
+    _busy = true;
+    _loading = true;
+    _error = _recentPeersStaleMessage;
+    notifyListeners();
+    try {
+      await _refreshRecentPeersNow();
+    } catch (error) {
+      final safeError = _safeException(error, const []);
+      _error = safeError.message;
+      throw safeError;
+    } finally {
+      _busy = false;
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _refreshRecentPeersNow() async {
+    try {
+      await _refreshRecentPeers?.call();
+      _recentPeersStale = false;
+      _error = null;
+    } catch (_) {
+      _recentPeersStale = true;
+      throw const ServerProfileRefreshException();
+    }
+  }
 }
+
+const _recentPeersStaleMessage =
+    'Server profile configuration changed, but recent connections could not be refreshed.';
 
 String _requiredString(Map<String, Object?> json, String key) {
   final value = json[key];

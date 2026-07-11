@@ -41,7 +41,7 @@ class ServerProfileSelector extends StatelessWidget {
       return;
     }
     if (choice.retry) {
-      await _runSafe(model.load);
+      await _runSafe(model.retry);
       return;
     }
     if (choice.recover) {

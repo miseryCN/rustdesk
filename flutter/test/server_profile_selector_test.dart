@@ -34,8 +34,12 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   final switchCalls = <String>[];
   int initializeCalls = 0;
   int loadCalls = 0;
+  int retryCalls = 0;
+  int recentRefreshRetryCalls = 0;
   int recoverCalls = 0;
   bool _initialized = false;
+  bool recentPeersStale = false;
+  Object? recentRefreshError;
 
   @override
   ServerProfile get active =>
@@ -78,6 +82,18 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   Future<void> load() async {
     loadCalls += 1;
     await _performLoad();
+  }
+
+  @override
+  Future<void> retry() async {
+    retryCalls += 1;
+    if (!recentPeersStale) return load();
+    recentRefreshRetryCalls += 1;
+    final error = recentRefreshError;
+    if (error != null) throw error;
+    recentPeersStale = false;
+    errorValue = null;
+    notifyListeners();
   }
 
   Future<void> _performLoad() async {
@@ -779,6 +795,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(model.loadCalls, 0);
+    expect(model.retryCalls, 0);
   });
 
   testWidgets('retry errors use a generic toast and never expose profile keys',
