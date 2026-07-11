@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../common.dart';
 import '../../common/widgets/dialog.dart';
@@ -35,6 +36,7 @@ class _ServerProfileDialogState extends State<ServerProfileDialog> {
   bool _adding = false;
   bool _localBusy = false;
   String? _operationError;
+  final _editorKey = GlobalKey<_ServerProfileEditorState>();
 
   bool get _busy => widget.model.busy || _localBusy;
   String _tr(String value) =>
@@ -80,7 +82,7 @@ class _ServerProfileDialogState extends State<ServerProfileDialog> {
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _operationError = _safeError(error, sensitiveValues);
+        _operationError = _tr(_safeError(error, sensitiveValues));
       });
     } finally {
       if (mounted) {
@@ -112,7 +114,7 @@ class _ServerProfileDialogState extends State<ServerProfileDialog> {
       server: server,
       testWithProxy: true,
     );
-    return result.isEmpty ? _tr('Successful') : _tr(result);
+    return result.isEmpty ? 'Successful' : result;
   }
 
   @override
@@ -121,68 +123,83 @@ class _ServerProfileDialogState extends State<ServerProfileDialog> {
       animation: widget.model,
       builder: (context, _) {
         final editor = _adding || _editingProfile != null;
-        return AlertDialog(
-          title: Row(
-            children: [
-              Expanded(child: Text(_tr('Server profiles'))),
-              IconButton(
-                key: const Key('add-profile'),
-                tooltip: _tr('Add'),
-                onPressed: _busy || editor ? null : _openEditor,
-                icon: const Icon(Icons.add_rounded),
+        return CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.escape): () {
+              if (editor && !_busy) _closeEditor();
+            },
+            const SingleActivator(LogicalKeyboardKey.enter): () {
+              if (editor && !_busy) _editorKey.currentState?._save();
+            },
+          },
+          child: FocusTraversalGroup(
+            child: AlertDialog(
+              title: Row(
+                children: [
+                  Expanded(
+                    child: Text('${_tr('ID Server')} ${_tr('Settings')}'),
+                  ),
+                  IconButton(
+                    key: const Key('add-profile'),
+                    tooltip: _tr('Add'),
+                    onPressed: _busy || editor ? null : _openEditor,
+                    icon: const Icon(Icons.add_rounded),
+                  ),
+                ],
               ),
-            ],
-          ),
-          content: SizedBox(
-            width: 560,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_operationError != null)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      _operationError!,
-                      key: const Key('profile-error'),
-                      style:
-                          TextStyle(color: Theme.of(context).colorScheme.error),
-                    ),
-                  ),
-                if (_operationError != null) const SizedBox(height: 8),
-                if (editor)
-                  _ServerProfileEditor(
-                    profile: _editingProfile,
-                    profiles: widget.model.profiles,
-                    busy: _busy,
-                    translator: _tr,
-                    testServer: _testServer,
-                    onCancel: _closeEditor,
-                    onSave: (name, idServer, key) => _runOperation(
-                      () {
-                        final profile = _editingProfile;
-                        return profile == null
-                            ? widget.model.add(name, idServer, key)
-                            : widget.model.update(
-                                profile.id,
-                                name,
-                                idServer,
-                                key,
-                              );
-                      },
-                      sensitiveValues: [key],
-                      closeEditor: true,
-                    ),
-                  )
-                else
-                  _ProfileList(
-                    profiles: widget.model.profiles,
-                    activeProfileId: widget.model.activeProfileId,
-                    busy: _busy,
-                    translator: _tr,
-                    onEdit: _openEditor,
-                    onDelete: _delete,
-                  ),
-              ],
+              content: SizedBox(
+                width: 560,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_operationError != null)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          _operationError!,
+                          key: const Key('profile-error'),
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error),
+                        ),
+                      ),
+                    if (_operationError != null) const SizedBox(height: 8),
+                    if (editor)
+                      _ServerProfileEditor(
+                        key: _editorKey,
+                        profile: _editingProfile,
+                        profiles: widget.model.profiles,
+                        busy: _busy,
+                        translator: _tr,
+                        testServer: _testServer,
+                        onCancel: _closeEditor,
+                        onSave: (name, idServer, key) => _runOperation(
+                          () {
+                            final profile = _editingProfile;
+                            return profile == null
+                                ? widget.model.add(name, idServer, key)
+                                : widget.model.update(
+                                    profile.id,
+                                    name,
+                                    idServer,
+                                    key,
+                                  );
+                          },
+                          sensitiveValues: [key],
+                          closeEditor: true,
+                        ),
+                      )
+                    else
+                      _ProfileList(
+                        profiles: widget.model.profiles,
+                        activeProfileId: widget.model.activeProfileId,
+                        busy: _busy,
+                        translator: _tr,
+                        onEdit: _openEditor,
+                        onDelete: _delete,
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         );
@@ -227,25 +244,24 @@ class _ProfileList extends StatelessWidget {
                 : const Icon(Icons.dns_outlined),
             title: Text(profile.name),
             subtitle: Text(profile.idServer),
-            trailing: active
-                ? null
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        key: Key('edit-${profile.id}'),
-                        tooltip: translator('Edit'),
-                        onPressed: busy ? null : () => onEdit(profile),
-                        icon: const Icon(Icons.edit_outlined),
-                      ),
-                      IconButton(
-                        key: Key('delete-${profile.id}'),
-                        tooltip: translator('Delete'),
-                        onPressed: busy ? null : () => onDelete(profile),
-                        icon: const Icon(Icons.delete_outline_rounded),
-                      ),
-                    ],
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  key: Key('edit-${profile.id}'),
+                  tooltip: translator('Edit'),
+                  onPressed: busy ? null : () => onEdit(profile),
+                  icon: const Icon(Icons.edit_outlined),
+                ),
+                if (!active)
+                  IconButton(
+                    key: Key('delete-${profile.id}'),
+                    tooltip: translator('Delete'),
+                    onPressed: busy ? null : () => onDelete(profile),
+                    icon: const Icon(Icons.delete_outline_rounded),
                   ),
+              ],
+            ),
           );
         },
       ),
@@ -255,6 +271,7 @@ class _ProfileList extends StatelessWidget {
 
 class _ServerProfileEditor extends StatefulWidget {
   const _ServerProfileEditor({
+    super.key,
     required this.profile,
     required this.profiles,
     required this.busy,
@@ -284,6 +301,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
   String? _idServerError;
   String? _testResult;
   bool _testing = false;
+  int _testRequest = 0;
 
   @override
   void initState() {
@@ -310,11 +328,14 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
     );
     setState(() {
       _nameError = name.isEmpty
-          ? 'Name is required.'
+          ? '${widget.translator('Name')}: ${widget.translator('Empty')}'
           : duplicate
-              ? 'Profile name must be unique.'
+              ? '${widget.translator('Name')}: '
+                  '${widget.translator('Already exists')}'
               : null;
-      _idServerError = idServer.isEmpty ? 'ID Server is required.' : null;
+      _idServerError = idServer.isEmpty
+          ? '${widget.translator('ID Server')}: ${widget.translator('Empty')}'
+          : null;
     });
     return _nameError == null && _idServerError == null;
   }
@@ -332,9 +353,13 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
     if (widget.busy || _testing) return;
     final server = _idServerController.text.trim();
     if (server.isEmpty) {
-      setState(() => _idServerError = 'ID Server is required.');
+      setState(() {
+        _idServerError =
+            '${widget.translator('ID Server')}: ${widget.translator('Empty')}';
+      });
       return;
     }
+    final request = ++_testRequest;
     setState(() {
       _testing = true;
       _idServerError = null;
@@ -342,18 +367,25 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
     });
     try {
       final result = await widget.testServer(server);
-      if (mounted) {
+      if (mounted &&
+          request == _testRequest &&
+          _idServerController.text.trim() == server) {
         setState(() {
-          _testResult =
-              result.isEmpty ? widget.translator('Successful') : result;
+          _testResult = widget.translator(
+            result.isEmpty ? 'Successful' : result,
+          );
         });
       }
     } catch (_) {
-      if (mounted) {
+      if (mounted &&
+          request == _testRequest &&
+          _idServerController.text.trim() == server) {
         setState(() => _testResult = widget.translator('Failed'));
       }
     } finally {
-      if (mounted) setState(() => _testing = false);
+      if (mounted && request == _testRequest) {
+        setState(() => _testing = false);
+      }
     }
   }
 
@@ -366,9 +398,10 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
         TextField(
           key: const Key('profile-name'),
           controller: _nameController,
+          autofocus: true,
           enabled: !widget.busy,
           decoration: InputDecoration(
-            labelText: 'Name',
+            labelText: widget.translator('Name'),
             errorText: _nameError,
           ),
         ),
@@ -380,8 +413,13 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
                 key: const Key('profile-id-server'),
                 controller: _idServerController,
                 enabled: !widget.busy,
+                onChanged: (_) {
+                  if (_testResult != null) {
+                    setState(() => _testResult = null);
+                  }
+                },
                 decoration: InputDecoration(
-                  labelText: 'ID Server',
+                  labelText: widget.translator('ID Server'),
                   errorText: _idServerError,
                 ),
               ),
@@ -404,7 +442,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
           controller: _keyController,
           enabled: !widget.busy,
           obscureText: true,
-          decoration: const InputDecoration(labelText: 'Key'),
+          decoration: InputDecoration(labelText: widget.translator('Key')),
         ),
         if (_testResult != null)
           Align(
@@ -415,13 +453,14 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            TextButton(
+            OutlinedButton(
               onPressed: disabled ? null : widget.onCancel,
               child: Text(widget.translator('Cancel')),
             ),
             const SizedBox(width: 8),
-            FilledButton(
+            ElevatedButton(
               key: const Key('save-profile'),
+              style: ElevatedButton.styleFrom(elevation: 0),
               onPressed: disabled ? null : _save,
               child: Text(widget.translator('OK')),
             ),
@@ -433,9 +472,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
 }
 
 String _safeError(Object error, Iterable<String> sensitiveValues) {
-  var message = error is ServerProfileException
-      ? error.message
-      : 'Server profile operation failed.';
+  var message = error is ServerProfileException ? error.message : 'Failed';
   for (final value in sensitiveValues) {
     if (value.isNotEmpty) message = message.replaceAll(value, '<redacted>');
   }

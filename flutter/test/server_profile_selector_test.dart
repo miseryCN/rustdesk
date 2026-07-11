@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_hbb/desktop/widgets/server_profile_dialog.dart';
 import 'package:flutter_hbb/models/server_profile_model.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -98,7 +99,7 @@ Future<void> pumpDialog(
           model: model,
           testServer: testServer,
           confirmDelete: confirmDelete,
-          translator: (value) => value,
+          translator: (value) => 'translated:$value',
         ),
       ),
     ),
@@ -106,7 +107,7 @@ Future<void> pumpDialog(
 }
 
 void main() {
-  testWidgets('active profile is checked and cannot be deleted',
+  testWidgets('active profile is checked and editable but cannot be deleted',
       (tester) async {
     final model = FakeServerProfileModel(
       profiles: profiles,
@@ -116,9 +117,19 @@ void main() {
 
     expect(find.byKey(const Key('active-active')), findsOneWidget);
     expect(find.byKey(const Key('delete-active')), findsNothing);
-    expect(find.byKey(const Key('edit-active')), findsNothing);
+    expect(find.byKey(const Key('edit-active')), findsOneWidget);
     expect(find.byKey(const Key('delete-other')), findsOneWidget);
     expect(find.text('other.example.com'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('edit-active')));
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextField>(find.byKey(const Key('profile-id-server')))
+          .controller!
+          .text,
+      'active.example.com',
+    );
   });
 
   testWidgets('non-active profile deletion is confirmed before removal',
@@ -158,15 +169,18 @@ void main() {
     await tester.tap(find.byKey(const Key('save-profile')));
     await tester.pump();
 
-    expect(find.text('Profile name must be unique.'), findsOneWidget);
+    expect(
+      find.text('translated:Name: translated:Already exists'),
+      findsOneWidget,
+    );
     expect(model.addCalls, isEmpty);
 
     await tester.enterText(find.byKey(const Key('profile-name')), '   ');
     await tester.enterText(find.byKey(const Key('profile-id-server')), '   ');
     await tester.tap(find.byKey(const Key('save-profile')));
     await tester.pump();
-    expect(find.text('Name is required.'), findsOneWidget);
-    expect(find.text('ID Server is required.'), findsOneWidget);
+    expect(find.text('translated:Name: translated:Empty'), findsOneWidget);
+    expect(find.text('translated:ID Server: translated:Empty'), findsOneWidget);
   });
 
   testWidgets('add trims all values passed to the model', (tester) async {
@@ -236,7 +250,7 @@ void main() {
     await tester.tap(find.byKey(const Key('test-profile-server')));
     await tester.pumpAndSettle();
     expect(testedServers, ['remote.example.com']);
-    expect(find.text('Server is unreachable'), findsOneWidget);
+    expect(find.text('translated:Server is unreachable'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('save-profile')));
     await tester.pump();
@@ -261,7 +275,7 @@ void main() {
     await tester.pump();
 
     final error = tester.widget<Text>(find.byKey(const Key('profile-error')));
-    expect(error.data, 'rejected <redacted>');
+    expect(error.data, 'translated:rejected <redacted>');
     expect(error.data, isNot(contains(secret)));
   });
 
@@ -283,7 +297,7 @@ void main() {
     await tester.pump();
     expect(
       tester
-          .widget<FilledButton>(find.byKey(const Key('save-profile')))
+          .widget<ElevatedButton>(find.byKey(const Key('save-profile')))
           .onPressed,
       isNull,
     );
@@ -292,6 +306,88 @@ void main() {
     pendingAdd.complete();
     await tester.pump();
     expect(model.addCalls, hasLength(1));
+  });
+
+  testWidgets('server test result is cleared and stale results are ignored',
+      (tester) async {
+    final first = Completer<String>();
+    final second = Completer<String>();
+    final testedServers = <String>[];
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(
+      tester,
+      model,
+      testServer: (server) {
+        testedServers.add(server);
+        return testedServers.length == 1 ? first.future : second.future;
+      },
+    );
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+    await tester.enterText(
+        find.byKey(const Key('profile-id-server')), ' first.example.com ');
+    await tester.tap(find.byKey(const Key('test-profile-server')));
+    await tester.pump();
+
+    await tester.enterText(
+        find.byKey(const Key('profile-id-server')), ' second.example.com ');
+    first.complete('first result');
+    await tester.pump();
+    expect(find.text('translated:first result'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('test-profile-server')));
+    second.complete('second result');
+    await tester.pump();
+    expect(find.text('translated:second result'), findsOneWidget);
+    expect(testedServers, ['first.example.com', 'second.example.com']);
+
+    await tester.enterText(
+        find.byKey(const Key('profile-id-server')), 'third.example.com');
+    await tester.pump();
+    expect(find.text('translated:second result'), findsNothing);
+  });
+
+  testWidgets('field labels and validation use the injected translator',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(tester, model);
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+
+    expect(find.text('translated:Name'), findsOneWidget);
+    expect(find.text('translated:ID Server'), findsOneWidget);
+    expect(find.text('translated:Key'), findsOneWidget);
+  });
+
+  testWidgets('desktop enter submits and escape cancels the editor',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(tester, model);
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('profile-name')), 'Remote');
+    await tester.enterText(
+        find.byKey(const Key('profile-id-server')), 'remote.example.com');
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(model.addCalls, [('Remote', 'remote.example.com', '')]);
+    expect(find.byKey(const Key('profile-name')), findsNothing);
+
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pump();
+    expect(find.byKey(const Key('profile-name')), findsNothing);
   });
 
   testWidgets('model busy disables profile operations', (tester) async {
