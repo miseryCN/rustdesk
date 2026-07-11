@@ -10,8 +10,13 @@ use hbb_common::dlopen::{
     Error as LibError,
 };
 use hbb_common::{
-    anyhow::anyhow, bail, config::LocalConfig, get_version_number, log, message_proto::*,
-    rendezvous_proto::ConnType, ResultType,
+    anyhow::anyhow,
+    bail,
+    config::{self, LocalConfig},
+    get_version_number, log,
+    message_proto::*,
+    rendezvous_proto::ConnType,
+    ResultType,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -1357,6 +1362,7 @@ pub fn session_add(
         Some(switch_uuid.to_string())
     };
 
+    let profile_id = config::active_peer_profile();
     session.lc.write().unwrap().initialize(
         id.to_owned(),
         conn_type,
@@ -1365,6 +1371,7 @@ pub fn session_add(
         get_adapter_luid(),
         shared_password,
         conn_token,
+        profile_id,
     );
 
     let session = Arc::new(session.clone());

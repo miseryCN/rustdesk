@@ -287,50 +287,94 @@ pub fn set_kb_layout_type(kb_layout_type: String) {
 
 #[inline]
 pub fn peer_has_password(id: String) -> bool {
-    !PeerConfig::load(&id).password.is_empty()
+    let profile_id = config::active_peer_profile();
+    load_peer_config_for(&profile_id, &id)
+        .map(|config| !config.password.is_empty())
+        .unwrap_or(false)
 }
 
 #[inline]
 pub fn forget_password(id: String) {
-    let mut c = PeerConfig::load(&id);
+    let profile_id = config::active_peer_profile();
+    let Some(mut c) = load_peer_config_for(&profile_id, &id) else {
+        return;
+    };
     c.password.clear();
-    c.store(&id);
+    store_peer_config_for(&profile_id, &id, &c);
 }
 
 #[inline]
 pub fn get_peer_option(id: String, name: String) -> String {
-    let c = PeerConfig::load(&id);
+    let profile_id = config::active_peer_profile();
+    let Some(c) = load_peer_config_for(&profile_id, &id) else {
+        return String::new();
+    };
     c.options.get(&name).unwrap_or(&"".to_owned()).to_owned()
 }
 
 #[inline]
 #[cfg(feature = "flutter")]
 pub fn get_peer_flutter_option(id: String, name: String) -> String {
-    let c = PeerConfig::load(&id);
+    let profile_id = config::active_peer_profile();
+    let Some(c) = load_peer_config_for(&profile_id, &id) else {
+        return String::new();
+    };
     c.ui_flutter.get(&name).unwrap_or(&"".to_owned()).to_owned()
 }
 
 #[inline]
 #[cfg(feature = "flutter")]
 pub fn set_peer_flutter_option(id: String, name: String, value: String) {
-    let mut c = PeerConfig::load(&id);
+    let profile_id = config::active_peer_profile();
+    let Some(mut c) = load_peer_config_for(&profile_id, &id) else {
+        return;
+    };
     if value.is_empty() {
         c.ui_flutter.remove(&name);
     } else {
         c.ui_flutter.insert(name, value);
     }
-    c.store(&id);
+    store_peer_config_for(&profile_id, &id, &c);
 }
 
 #[inline]
 pub fn set_peer_option(id: String, name: String, value: String) {
-    let mut c = PeerConfig::load(&id);
+    let profile_id = config::active_peer_profile();
+    let Some(mut c) = load_peer_config_for(&profile_id, &id) else {
+        return;
+    };
     if value.is_empty() {
         c.options.remove(&name);
     } else {
         c.options.insert(name, value);
     }
-    c.store(&id);
+    store_peer_config_for(&profile_id, &id, &c);
+}
+
+fn load_peer_config_for(profile_id: &str, id: &str) -> Option<PeerConfig> {
+    match PeerConfig::try_load_for(profile_id, id) {
+        Ok(config) => Some(config.unwrap_or_default()),
+        Err(err) => {
+            log::error!(
+                "Failed to load peer config for profile '{}' and peer '{}': {}",
+                profile_id,
+                id,
+                err
+            );
+            None
+        }
+    }
+}
+
+fn store_peer_config_for(profile_id: &str, id: &str, peer: &PeerConfig) {
+    if let Err(err) = peer.store_for(profile_id, id) {
+        log::error!(
+            "Failed to store peer config for profile '{}' and peer '{}': {}",
+            profile_id,
+            id,
+            err
+        );
+    }
 }
 
 #[inline]
@@ -663,7 +707,8 @@ pub fn set_permanent_password_with_result(password: String) -> bool {
 
 #[inline]
 pub fn get_peer(id: String) -> PeerConfig {
-    PeerConfig::load(&id)
+    let profile_id = config::active_peer_profile();
+    load_peer_config_for(&profile_id, &id).unwrap_or_default()
 }
 
 #[inline]
@@ -802,7 +847,20 @@ pub fn peer_to_map(id: String, p: PeerConfig) -> HashMap<&'static str, String> {
 
 #[cfg(feature = "flutter")]
 pub fn peer_exists(id: &str) -> bool {
-    PeerConfig::exists(id)
+    let profile_id = config::active_peer_profile();
+    match PeerConfig::try_load_for(&profile_id, id) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            log::error!(
+                "Failed to inspect peer config for profile '{}' and peer '{}': {}",
+                profile_id,
+                id,
+                err
+            );
+            false
+        }
+    }
 }
 
 #[inline]

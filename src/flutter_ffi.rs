@@ -22,19 +22,45 @@ use hbb_common::{
     ResultType,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::{
         atomic::{AtomicI32, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime},
 };
 
 pub type SessionID = uuid::Uuid;
 
+#[derive(Default)]
+struct PendingStoredPeerBatch {
+    batches: VecDeque<(HashSet<String>, String)>,
+}
+
+impl PendingStoredPeerBatch {
+    fn record(&mut self, profile_id: String, ids: &[String]) {
+        const MAX_PENDING_BATCHES: usize = 32;
+        if self.batches.len() == MAX_PENDING_BATCHES {
+            self.batches.pop_front();
+        }
+        self.batches
+            .push_back((ids.iter().cloned().collect(), profile_id));
+    }
+
+    fn take_profile_for(&mut self, ids: &[String]) -> Option<String> {
+        let position = self.batches.iter().position(|(stored, _)| {
+            stored.len() == ids.len() && ids.iter().all(|id| stored.contains(id))
+        })?;
+        self.batches
+            .remove(position)
+            .map(|(_, profile_id)| profile_id)
+    }
+}
+
 lazy_static::lazy_static! {
     static ref TEXTURE_RENDER_KEY: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
+    static ref PENDING_STORED_PEER_BATCH: Mutex<PendingStoredPeerBatch> = Mutex::new(Default::default());
 }
 
 fn initialize(app_dir: &str, custom_client_config: &str) {
@@ -1398,11 +1424,34 @@ pub fn main_set_peer_alias(id: String, alias: String) {
 }
 
 pub fn main_get_new_stored_peers() -> String {
-    let peers: Vec<String> = config::NEW_STORED_PEER_CONFIG
+    let profile_id = config::active_peer_profile();
+    let stored: Vec<String> = config::NEW_STORED_PEER_CONFIG
         .lock()
         .unwrap()
         .drain()
         .collect();
+    let peers: Vec<String> = stored
+        .into_iter()
+        .filter(|id| match PeerConfig::try_load_for(&profile_id, id) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(err) => {
+                log::error!(
+                    "Failed to inspect newly stored peer for profile '{}' and peer '{}': {}",
+                    profile_id,
+                    id,
+                    err
+                );
+                false
+            }
+        })
+        .collect();
+    if !peers.is_empty() {
+        PENDING_STORED_PEER_BATCH
+            .lock()
+            .unwrap()
+            .record(profile_id, &peers);
+    }
     serde_json::to_string(&peers).unwrap_or_default()
 }
 
@@ -1419,6 +1468,7 @@ pub fn main_peer_exists(id: String) -> bool {
 }
 
 fn load_recent_peers(
+    profile_id: &str,
     vec_id_modified_time_path: &Vec<(String, SystemTime, std::path::PathBuf)>,
     to_end: bool,
     all_peers: &mut Vec<HashMap<&str, String>>,
@@ -1429,7 +1479,8 @@ fn load_recent_peers(
     } else {
         None
     };
-    let mut peers_next = PeerConfig::batch_peers(vec_id_modified_time_path, from, to);
+    let mut peers_next =
+        PeerConfig::batch_peers_for(profile_id, vec_id_modified_time_path, from, to);
     // There may be less peers than the batch size.
     // But no need to consider this case, because it is a rare case.
     let peers = peers_next.0.drain(..).map(|(id, _, p)| peer_to_map(id, p));
@@ -1450,7 +1501,20 @@ pub fn main_load_recent_peers() {
     };
 
     if !config::APP_DIR.read().unwrap().is_empty() {
-        let vec_id_modified_time_path = PeerConfig::get_vec_id_modified_time_path(&None);
+        let profile_id = config::active_peer_profile();
+        let vec_id_modified_time_path =
+            match PeerConfig::try_get_vec_id_modified_time_path_for(&profile_id, &None) {
+                Ok(peers) => peers,
+                Err(err) => {
+                    log::error!(
+                        "Failed to enumerate recent peers for profile '{}': {}",
+                        profile_id,
+                        err
+                    );
+                    push_to_flutter("".to_owned(), None);
+                    return;
+                }
+            };
         if vec_id_modified_time_path.is_empty() {
             push_to_flutter("".to_owned(), None);
             return;
@@ -1460,7 +1524,13 @@ pub fn main_load_recent_peers() {
             && cfg!(target_os = "windows");
         let mut all_peers = vec![];
         if load_two_times {
-            let next_from = load_recent_peers(&vec_id_modified_time_path, false, &mut all_peers, 0);
+            let next_from = load_recent_peers(
+                &profile_id,
+                &vec_id_modified_time_path,
+                false,
+                &mut all_peers,
+                0,
+            );
             let rest_ids = if next_from < vec_id_modified_time_path.len() {
                 Some(
                     vec_id_modified_time_path[next_from..]
@@ -1476,9 +1546,21 @@ pub fn main_load_recent_peers() {
                 serde_json::ser::to_string(&all_peers).unwrap_or("".to_owned()),
                 rest_ids,
             );
-            let _ = load_recent_peers(&vec_id_modified_time_path, true, &mut all_peers, next_from);
+            let _ = load_recent_peers(
+                &profile_id,
+                &vec_id_modified_time_path,
+                true,
+                &mut all_peers,
+                next_from,
+            );
         } else {
-            let _ = load_recent_peers(&vec_id_modified_time_path, true, &mut all_peers, 0);
+            let _ = load_recent_peers(
+                &profile_id,
+                &vec_id_modified_time_path,
+                true,
+                &mut all_peers,
+                0,
+            );
         }
         // Don't check if `all_peers` is empty, because we need this message to update the state in the flutter side.
         push_to_flutter(
@@ -1492,16 +1574,31 @@ pub fn main_load_recent_peers() {
 
 pub fn main_load_recent_peers_for_ab(filter: String) -> String {
     let id_filters = serde_json::from_str::<Vec<String>>(&filter).unwrap_or_default();
+    let profile_id = PENDING_STORED_PEER_BATCH
+        .lock()
+        .unwrap()
+        .take_profile_for(&id_filters)
+        .unwrap_or_else(config::active_peer_profile);
     let id_filters = if id_filters.is_empty() {
         None
     } else {
         Some(id_filters)
     };
     if !config::APP_DIR.read().unwrap().is_empty() {
-        let peers: Vec<HashMap<&str, String>> = PeerConfig::peers(id_filters)
-            .drain(..)
-            .map(|(id, _, p)| peer_to_map(id, p))
-            .collect();
+        let peers = match PeerConfig::try_peers_for(&profile_id, id_filters) {
+            Ok(mut peers) => peers
+                .drain(..)
+                .map(|(id, _, p)| peer_to_map(id, p))
+                .collect::<Vec<HashMap<&str, String>>>(),
+            Err(err) => {
+                log::error!(
+                    "Failed to load address book peers for profile '{}': {}",
+                    profile_id,
+                    err
+                );
+                Vec::new()
+            }
+        };
         return serde_json::ser::to_string(&peers).unwrap_or("".to_owned());
     }
     "".to_string()
@@ -1516,8 +1613,20 @@ pub fn main_load_fav_peers() {
         );
     };
     if !config::APP_DIR.read().unwrap().is_empty() {
+        let profile_id = config::active_peer_profile();
         let favs = get_fav();
-        let mut recent = PeerConfig::peers(Some(favs.clone()));
+        let mut recent = match PeerConfig::try_peers_for(&profile_id, Some(favs.clone())) {
+            Ok(peers) => peers,
+            Err(err) => {
+                log::error!(
+                    "Failed to load favorite peers for profile '{}': {}",
+                    profile_id,
+                    err
+                );
+                push_to_flutter("".to_owned());
+                return;
+            }
+        };
         let mut lan = config::LanPeers::load()
             .peers
             .iter()
@@ -1847,7 +1956,15 @@ pub fn main_device_name(name: String) {
 }
 
 pub fn main_remove_peer(id: String) {
-    PeerConfig::remove(&id);
+    let profile_id = config::active_peer_profile();
+    if let Err(err) = PeerConfig::remove_for(&profile_id, &id) {
+        log::error!(
+            "Failed to remove peer config for profile '{}' and peer '{}': {}",
+            profile_id,
+            id,
+            err
+        );
+    }
 }
 
 pub fn main_has_hwcodec() -> SyncReturn<bool> {
@@ -3099,6 +3216,30 @@ pub fn session_get_common(
         Some(v)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod stored_peer_batch_profile_tests {
+    use super::*;
+
+    #[test]
+    fn stored_peer_batch_returns_the_recorded_profile() {
+        let mut batch = PendingStoredPeerBatch::default();
+        let ids = vec!["same-peer".to_owned(), "home-only".to_owned()];
+        batch.record("home".to_owned(), &ids);
+
+        assert_eq!(batch.take_profile_for(&ids).as_deref(), Some("home"));
+    }
+
+    #[test]
+    fn unrelated_address_book_filter_does_not_consume_stored_peer_batch() {
+        let mut batch = PendingStoredPeerBatch::default();
+        let stored = vec!["home-peer".to_owned()];
+        batch.record("home".to_owned(), &stored);
+
+        assert_eq!(batch.take_profile_for(&["other".to_owned()]), None);
+        assert_eq!(batch.take_profile_for(&stored).as_deref(), Some("home"));
     }
 }
 
