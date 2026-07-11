@@ -1929,8 +1929,14 @@ impl LoginConfigHandler {
     pub fn load_config(&self) -> PeerConfig {
         debug_assert!(self.id.len() > 0);
         match PeerConfig::try_load_for(&self.profile_id, &self.id) {
-            Ok(Some(config)) => config,
-            Ok(None) => PeerConfig::default(),
+            Ok(Some(config)) => {
+                self.config_writable.store(true, Ordering::Relaxed);
+                config
+            }
+            Ok(None) => {
+                self.config_writable.store(true, Ordering::Relaxed);
+                PeerConfig::default()
+            }
             Err(err) => {
                 self.config_writable.store(false, Ordering::Relaxed);
                 log::error!(
@@ -1955,14 +1961,16 @@ impl LoginConfigHandler {
     /// * `config` - [`PeerConfig`] to save.
     pub fn save_config(&mut self, config: PeerConfig) {
         if self.config_writable.load(Ordering::Relaxed) {
-            if let Err(err) = config.store_for(&self.profile_id, &self.id) {
-                self.config_writable.store(false, Ordering::Relaxed);
-                log::error!(
-                    "Failed to store peer config for profile '{}' and peer '{}': {}",
-                    self.profile_id,
-                    self.id,
-                    err
-                );
+            match config.store_for(&self.profile_id, &self.id) {
+                Ok(()) => self.config = config,
+                Err(err) => {
+                    log::error!(
+                        "Failed to store peer config for profile '{}' and peer '{}': {}",
+                        self.profile_id,
+                        self.id,
+                        err
+                    );
+                }
             }
         } else {
             log::warn!(
@@ -1970,8 +1978,8 @@ impl LoginConfigHandler {
                 self.profile_id,
                 self.id
             );
+            self.config = config;
         }
-        self.config = config;
     }
 
     /// Set an option for handler's [`PeerConfig`].
@@ -4489,5 +4497,56 @@ mod server_profile_session_tests {
         handler.set_option("alias".to_owned(), "must not persist".to_owned());
 
         assert_eq!(fs::read(path).expect("read corrupt peer config"), corrupt);
+    }
+
+    #[test]
+    fn successful_reload_reenables_writes_after_corrupt_config_is_repaired() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("repaired-profile-test-{}", rand::random::<u64>());
+        let path = PeerConfig::path_for_root(config::Config::path(""), "home", &peer_id)
+            .expect("peer path should be valid");
+        fs::create_dir_all(path.parent().expect("peer path should have a parent"))
+            .expect("create peer directory");
+        fs::write(&path, b"password = [invalid toml").expect("write corrupt peer config");
+        let mut handler = initialize_handler_for_peer("home", peer_id.clone());
+        let repaired =
+            hbb_common::toml::to_string_pretty(&PeerConfig::default()).expect("serialize peer");
+        fs::write(&path, repaired).expect("repair peer config");
+
+        handler.set_option("alias".to_owned(), "repaired".to_owned());
+
+        assert_eq!(
+            PeerConfig::try_load_for("home", &peer_id)
+                .expect("load repaired peer")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("repaired".to_owned())
+        );
+    }
+
+    #[test]
+    fn store_failure_does_not_permanently_disable_later_writes() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("retry-store-test-{}", rand::random::<u64>());
+        let mut handler = LoginConfigHandler::default();
+        handler.id = peer_id.clone();
+        handler.profile_id = "../invalid".to_owned();
+        handler.config_writable.store(true, Ordering::Relaxed);
+        let mut peer = PeerConfig::default();
+        peer.options.insert("alias".to_owned(), "retry".to_owned());
+        handler.save_config(peer.clone());
+        assert!(handler.config_writable.load(Ordering::Relaxed));
+        assert_ne!(handler.config.options.get("alias"), Some(&"retry".to_owned()));
+
+        handler.profile_id = "home".to_owned();
+        handler.save_config(peer);
+
+        assert_eq!(
+            PeerConfig::try_load_for("home", &peer_id)
+                .expect("load retried peer")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("retry".to_owned())
+        );
     }
 }

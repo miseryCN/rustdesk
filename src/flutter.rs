@@ -10,13 +10,8 @@ use hbb_common::dlopen::{
     Error as LibError,
 };
 use hbb_common::{
-    anyhow::anyhow,
-    bail,
-    config::{self, LocalConfig},
-    get_version_number, log,
-    message_proto::*,
-    rendezvous_proto::ConnType,
-    ResultType,
+    anyhow::anyhow, bail, config::LocalConfig, get_version_number, log, message_proto::*,
+    rendezvous_proto::ConnType, ResultType,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -1362,7 +1357,10 @@ pub fn session_add(
         Some(switch_uuid.to_string())
     };
 
-    let profile_id = config::active_peer_profile();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let profile_id = crate::server_profiles::capture_active_profile_id()?;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let profile_id = hbb_common::config::active_peer_profile();
     session.lc.write().unwrap().initialize(
         id.to_owned(),
         conn_type,

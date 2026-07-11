@@ -613,6 +613,7 @@ impl SciterSession {
             ConnType::DEFAULT_CONN
         };
 
+        // Legacy Sciter builds do not expose runtime server-profile switching.
         let profile_id = config::active_peer_profile();
         session.lc.write().unwrap().initialize(
             id,

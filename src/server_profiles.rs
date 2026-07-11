@@ -279,6 +279,9 @@ impl ServerProfileManager {
             .remove_profile_transaction(&self.config, id)
             .context("failed to remove server profile")?;
         self.config = updated;
+        hbb_common::config::purge_new_stored_peers_for_profile(id);
+        #[cfg(feature = "flutter")]
+        crate::flutter_ffi::purge_stored_peer_events_for_profile(id);
         Ok(self.snapshot())
     }
 
@@ -507,6 +510,23 @@ pub(crate) fn get() -> String {
     })
 }
 
+pub(crate) fn capture_active_profile_id() -> ResultType<String> {
+    let state = MANAGER
+        .lock()
+        .map_err(|_| anyhow!("server profile manager lock is poisoned"))?;
+    let manager = state.manager.as_ref().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            state
+                .init_error
+                .as_deref()
+                .unwrap_or("server profile manager is not initialized")
+        )
+    })?;
+    manager.ensure_healthy()?;
+    Ok(manager.active_profile_id().to_owned())
+}
+
 pub(crate) fn add(name: &str, id_server: &str, key: &str) -> String {
     with_manager(|manager| manager.add(name, id_server, key))
 }
@@ -535,8 +555,10 @@ mod tests {
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex,
+            mpsc, Arc, Condvar, Mutex,
         },
+        thread,
+        time::Duration,
     };
 
     struct TempRoot(PathBuf);
@@ -718,6 +740,31 @@ mod tests {
     }
 
     struct RejectCurrentOptions;
+
+    struct BlockingOptions {
+        state: Arc<Mutex<HashMap<String, String>>>,
+        entered: Mutex<Option<mpsc::Sender<()>>>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl OptionsBackend for BlockingOptions {
+        fn current(&self) -> hbb_common::ResultType<HashMap<String, String>> {
+            Ok(self.state.lock().expect("options lock").clone())
+        }
+
+        fn apply(&self, options: HashMap<String, String>) -> hbb_common::ResultType<()> {
+            *self.state.lock().expect("options lock") = options;
+            if let Some(entered) = self.entered.lock().expect("entered lock").take() {
+                entered.send(()).expect("signal apply window");
+            }
+            let (released, condvar) = &*self.release;
+            let mut released = released.lock().expect("release lock");
+            while !*released {
+                released = condvar.wait(released).expect("release wait");
+            }
+            Ok(())
+        }
+    }
 
     impl OptionsBackend for RejectCurrentOptions {
         fn current(&self) -> hbb_common::ResultType<HashMap<String, String>> {
@@ -1135,6 +1182,78 @@ mod tests {
         let json = state.unavailable_response();
         assert!(json.contains("server profiles config is corrupt"));
         assert!(json.contains("\"ok\":false"));
+    }
+
+    #[test]
+    fn active_profile_capture_waits_for_switch_transaction_to_finish() {
+        let root = TempRoot::new();
+        let store = ServerProfileStore::with_root(&root.0);
+        let config = ServerProfilesConfig {
+            version: SERVER_PROFILES_VERSION,
+            active_profile_id: "home".to_owned(),
+            profiles: vec![
+                profile("home", "Home", "home.example.com", "home-key"),
+                profile("office", "Office", "office.example.com", "office-key"),
+            ],
+        };
+        store.save(&config).expect("config save");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let manager = ServerProfileManager::with_dependencies(
+            Box::new(store),
+            Box::new(BlockingOptions {
+                state: Arc::new(Mutex::new(HashMap::new())),
+                entered: Mutex::new(Some(entered_tx)),
+                release: release.clone(),
+            }),
+            Box::new(TestRuntime(Arc::new(Mutex::new("home".to_owned())))),
+            config,
+        )
+        .expect("manager initialize");
+        {
+            let mut state = MANAGER.lock().expect("manager lock");
+            *state = ManagerState {
+                root: Some(root.0.clone()),
+                manager: Some(manager),
+                init_error: None,
+            };
+        }
+
+        let switch_thread = thread::spawn(|| switch("office"));
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("switch enters options apply");
+        let (capture_tx, capture_rx) = mpsc::channel();
+        let (capture_entered_tx, capture_entered_rx) = mpsc::channel();
+        let capture_thread = thread::spawn(move || {
+            capture_entered_tx
+                .send(())
+                .expect("signal capture invocation");
+            capture_tx
+                .send(capture_active_profile_id())
+                .expect("send capture result");
+        });
+        capture_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("capture thread starts invocation");
+        assert!(capture_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        let (released, condvar) = &*release;
+        *released.lock().expect("release lock") = true;
+        condvar.notify_all();
+        assert!(switch_thread
+            .join()
+            .expect("switch thread")
+            .contains("\"ok\":true"));
+        assert_eq!(
+            capture_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("capture completes")
+                .expect("capture succeeds"),
+            "office"
+        );
+        capture_thread.join().expect("capture thread");
+        *MANAGER.lock().expect("manager lock") = ManagerState::default();
     }
 
     #[test]
