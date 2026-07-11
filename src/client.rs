@@ -4537,7 +4537,10 @@ mod server_profile_session_tests {
         peer.options.insert("alias".to_owned(), "retry".to_owned());
         handler.save_config(peer.clone());
         assert!(handler.config_writable.load(Ordering::Relaxed));
-        assert_ne!(handler.config.options.get("alias"), Some(&"retry".to_owned()));
+        assert_ne!(
+            handler.config.options.get("alias"),
+            Some(&"retry".to_owned())
+        );
 
         handler.profile_id = "home".to_owned();
         handler.save_config(peer);
