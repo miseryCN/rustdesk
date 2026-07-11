@@ -663,11 +663,52 @@ mod tests {
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            mpsc, Arc, Condvar, Mutex,
+            mpsc, Arc, Condvar, Mutex, MutexGuard,
         },
         thread,
         time::Duration,
     };
+
+    static MANAGER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_manager_state() -> MutexGuard<'static, ManagerState> {
+        MANAGER.lock().unwrap_or_else(|poisoned| {
+            eprintln!("recovering poisoned server profile manager test state");
+            MANAGER.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
+    fn reset_test_manager() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            *test_manager_state() = ManagerState::default();
+        }));
+        if result.is_err() {
+            eprintln!("failed to reset server profile manager test state");
+        }
+    }
+
+    struct ManagerTestGuard {
+        _serial: MutexGuard<'static, ()>,
+    }
+
+    impl ManagerTestGuard {
+        fn enter() -> Self {
+            let serial = MANAGER_TEST_LOCK.lock().unwrap_or_else(|poisoned| {
+                eprintln!("recovering poisoned server profile manager test lock");
+                MANAGER_TEST_LOCK.clear_poison();
+                poisoned.into_inner()
+            });
+            reset_test_manager();
+            Self { _serial: serial }
+        }
+    }
+
+    impl Drop for ManagerTestGuard {
+        fn drop(&mut self) {
+            reset_test_manager();
+        }
+    }
 
     struct TempRoot(PathBuf);
 
@@ -1379,6 +1420,7 @@ mod tests {
 
     #[test]
     fn active_profile_capture_waits_for_switch_transaction_to_finish() {
+        let _manager_test_guard = ManagerTestGuard::enter();
         let root = TempRoot::new();
         let store = ServerProfileStore::with_root(&root.0);
         let config = ServerProfilesConfig {
@@ -1404,7 +1446,7 @@ mod tests {
         )
         .expect("manager initialize");
         {
-            let mut state = MANAGER.lock().expect("manager lock");
+            let mut state = test_manager_state();
             *state = ManagerState {
                 root: Some(root.0.clone()),
                 manager: Some(manager),
@@ -1446,24 +1488,17 @@ mod tests {
             "office"
         );
         capture_thread.join().expect("capture thread");
-        *MANAGER.lock().expect("manager lock") = ManagerState::default();
     }
 
     #[test]
     fn snapshot_reader_does_not_hold_manager_lock_during_io() {
+        let _manager_test_guard = ManagerTestGuard::enter();
         let fixture = fixture();
-        *MANAGER.lock().expect("manager lock") = ManagerState {
+        *test_manager_state() = ManagerState {
             root: Some(fixture._root.0.clone()),
             manager: Some(fixture.manager),
             init_error: None,
         };
-        struct ResetManager;
-        impl Drop for ResetManager {
-            fn drop(&mut self) {
-                *MANAGER.lock().expect("manager lock") = ManagerState::default();
-            }
-        }
-        let _reset = ResetManager;
         let (reader_started_tx, reader_started_rx) = mpsc::channel();
         let (release_reader_tx, release_reader_rx) = mpsc::channel();
         let reader = thread::spawn(move || {
@@ -1483,7 +1518,7 @@ mod tests {
         {
             let mut state = MANAGER
                 .try_lock()
-                .expect("reader must not hold manager lock");
+                .unwrap_or_else(|error| panic!("reader must not hold manager lock: {error}"));
             state
                 .manager
                 .as_mut()
