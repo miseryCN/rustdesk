@@ -301,8 +301,8 @@ class ServerProfileHomeHeader extends StatelessWidget {
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Flexible(child: connectionCard),
-            const SizedBox(width: 12),
+            connectionCard,
+            const Spacer(),
             selector,
             const SizedBox(width: 12),
           ],

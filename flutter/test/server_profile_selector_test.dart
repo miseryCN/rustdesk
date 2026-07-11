@@ -661,6 +661,10 @@ void main() {
       tester.getTopLeft(find.byKey(const Key('selector-slot'))).dy,
       lessThan(tester.getTopLeft(find.byKey(const Key('connection-card'))).dy),
     );
+    expect(
+      tester.getTopRight(find.byKey(const Key('selector-slot'))).dx,
+      390,
+    );
   });
 
   testWidgets('responsive header uses one row when wide', (tester) async {
@@ -690,6 +694,10 @@ void main() {
     expect(
       tester.getTopLeft(find.byKey(const Key('selector-slot'))).dy,
       tester.getTopLeft(find.byKey(const Key('connection-card'))).dy,
+    );
+    expect(
+      tester.getTopRight(find.byKey(const Key('selector-slot'))).dx,
+      888,
     );
   });
 }
