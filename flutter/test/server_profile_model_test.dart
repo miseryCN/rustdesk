@@ -308,22 +308,93 @@ void main() {
     expect(refreshes, 0);
   });
 
-  test('refresh failure preserves previous state', () async {
-    final api = FakeServerProfileApi();
-    final model = ServerProfileModel(
+  test('switch remove and recover commit state before refreshing', () async {
+    final nextResponse = _response(
+      activeProfileId: 'work',
+      profiles: [
+        {
+          'id': 'work',
+          'name': 'Work',
+          'id_server': 'work.example.com',
+          'key': 'work-key',
+        },
+      ],
+    );
+    final operations = <Future<void> Function(ServerProfileModel)>[
+      (model) => model.switchTo('work'),
+      (model) => model.remove('default'),
+      (model) => model.recover(),
+    ];
+
+    for (final operation in operations) {
+      final api = FakeServerProfileApi()
+        ..switchResponse = nextResponse
+        ..removeResponse = nextResponse
+        ..recoverResponse = nextResponse;
+      late final ServerProfileModel model;
+      String? activeDuringRefresh;
+      model = ServerProfileModel(
+        api: api,
+        refreshRecentPeers: () {
+          activeDuringRefresh = model.activeProfileId;
+        },
+      );
+      await model.load();
+
+      await operation(model);
+
+      expect(activeDuringRefresh, 'work');
+      expect(model.activeProfileId, 'work');
+    }
+  });
+
+  test('refresh failure keeps committed state and restores recent peers',
+      () async {
+    final api = FakeServerProfileApi()
+      ..switchResponse = _response(
+        activeProfileId: 'work',
+        profiles: [
+          {
+            'id': 'work',
+            'name': 'Work',
+            'id_server': 'work.example.com',
+            'key': 'work-key',
+          },
+        ],
+      );
+    final peers = <String>['peer-1'];
+    final restPeerIds = <String>['peer-2'];
+    late final ServerProfileModel model;
+    model = ServerProfileModel(
       api: api,
-      refreshRecentPeers: () => throw StateError('refresh failed'),
+      refreshRecentPeers: () => refreshRecentPeersTransaction(
+        peers: peers,
+        restPeerIds: restPeerIds,
+        notify: () {},
+        load: () async {
+          expect(model.activeProfileId, 'work');
+          throw StateError('refresh failed');
+        },
+      ),
     );
     await model.load();
-    final before = model.state;
 
     await expectLater(
-      model.switchTo('default'),
-      throwsA(isA<ServerProfileException>()),
+      model.switchTo('work'),
+      throwsA(
+        isA<ServerProfileRefreshException>().having(
+          (error) => error.message,
+          'message',
+          contains('recent connections could not be refreshed'),
+        ),
+      ),
     );
 
-    expect(model.state, same(before));
-    expect(model.error, 'Server profile operation failed.');
+    expect(model.activeProfileId, 'work');
+    expect(peers, ['peer-1']);
+    expect(restPeerIds, ['peer-2']);
+    expect(model.error, contains('recent connections could not be refreshed'));
+    expect(model.switching, isFalse);
   });
 
   test('remove refreshes recent peers exactly once', () async {

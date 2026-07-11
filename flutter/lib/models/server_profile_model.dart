@@ -135,6 +135,13 @@ class ServerProfileException implements Exception {
   String toString() => message;
 }
 
+class ServerProfileRefreshException extends ServerProfileException {
+  const ServerProfileRefreshException()
+      : super(
+          'Server profile configuration changed, but recent connections could not be refreshed.',
+        );
+}
+
 ServerProfilesState parseServerProfilesResponse(
   String response, {
   Iterable<String> sensitiveValues = const [],
@@ -262,10 +269,15 @@ class ServerProfileModel extends ChangeNotifier {
         response,
         sensitiveValues: sensitiveValues,
       );
-      if (refreshRecentPeers) {
-        await _refreshRecentPeers?.call();
-      }
       _state = nextState;
+      notifyListeners();
+      if (refreshRecentPeers) {
+        try {
+          await _refreshRecentPeers?.call();
+        } catch (_) {
+          throw const ServerProfileRefreshException();
+        }
+      }
     } catch (error) {
       final safeError = _safeException(error, sensitiveValues);
       _error = safeError.message;
@@ -291,6 +303,9 @@ ServerProfileException _safeException(
   Object error,
   Iterable<String> sensitiveValues,
 ) {
+  if (error is ServerProfileRefreshException) {
+    return error;
+  }
   if (error is ServerProfileException) {
     return ServerProfileException(_redact(error.message, sensitiveValues));
   }
