@@ -142,6 +142,22 @@ class ServerProfileRefreshException extends ServerProfileException {
         );
 }
 
+abstract class ServerProfileModelBase extends ChangeNotifier {
+  List<ServerProfile> get profiles;
+  String? get activeProfileId;
+  ServerProfile get active;
+  bool get loading;
+  bool get switching;
+  bool get busy;
+  String? get error;
+
+  Future<void> add(String name, String idServer, String key);
+  Future<void> update(String id, String name, String idServer, String key);
+  Future<void> remove(String id);
+  Future<void> switchTo(String id);
+  Future<void> recover();
+}
+
 ServerProfilesState parseServerProfilesResponse(
   String response, {
   Iterable<String> sensitiveValues = const [],
@@ -175,7 +191,7 @@ ServerProfilesState parseServerProfilesResponse(
   return ServerProfilesState.fromJson(config);
 }
 
-class ServerProfileModel extends ChangeNotifier {
+class ServerProfileModel extends ServerProfileModelBase {
   ServerProfileModel({
     required ServerProfileApi api,
     FutureOr<void> Function()? refreshRecentPeers,
@@ -191,8 +207,11 @@ class ServerProfileModel extends ChangeNotifier {
   String? _error;
 
   ServerProfilesState? get state => _state;
+  @override
   List<ServerProfile> get profiles => _state?.profiles ?? const [];
+  @override
   String? get activeProfileId => _state?.activeProfileId;
+  @override
   ServerProfile get active {
     final state = _state;
     if (state == null) {
@@ -203,8 +222,13 @@ class ServerProfileModel extends ChangeNotifier {
     return state.active;
   }
 
+  @override
   bool get loading => _loading;
+  @override
   bool get switching => _switching;
+  @override
+  bool get busy => _busy;
+  @override
   String? get error => _error;
 
   Future<void> initialize() => load();
@@ -214,12 +238,14 @@ class ServerProfileModel extends ChangeNotifier {
         loading: true,
       );
 
+  @override
   Future<void> add(String name, String idServer, String key) => _run(
         request: () => _api.addProfile(name, idServer, key),
         loading: true,
         sensitiveValues: [key],
       );
 
+  @override
   Future<void> update(String id, String name, String idServer, String key) =>
       _run(
         request: () => _api.updateProfile(id, name, idServer, key),
@@ -227,18 +253,21 @@ class ServerProfileModel extends ChangeNotifier {
         sensitiveValues: [key],
       );
 
+  @override
   Future<void> remove(String id) => _run(
         request: () => _api.removeProfile(id),
         loading: true,
         refreshRecentPeers: true,
       );
 
+  @override
   Future<void> switchTo(String id) => _run(
         request: () => _api.switchProfile(id),
         switching: true,
         refreshRecentPeers: true,
       );
 
+  @override
   Future<void> recover() => _run(
         request: _api.recoverProfiles,
         loading: true,
