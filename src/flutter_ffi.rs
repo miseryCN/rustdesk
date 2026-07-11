@@ -1654,16 +1654,21 @@ where
     })
 }
 
+fn load_recent_peers_from_namespace(
+    namespace: &str,
+) -> ResultType<Vec<HashMap<&'static str, String>>> {
+    Ok(PeerConfig::try_peers_for(namespace, None)?
+        .into_iter()
+        .map(|(id, _, peer)| peer_to_map(id, peer))
+        .collect())
+}
+
 pub fn main_load_recent_peers_snapshot(profile_id: String) -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         return recent_peers_snapshot_with(&profile_id, |logical_profile_id| {
             crate::server_profiles::with_peer_namespace(logical_profile_id, |namespace| {
-                let peers = PeerConfig::try_peers_for(namespace, None)?
-                    .into_iter()
-                    .map(|(id, _, peer)| peer_to_map(id, peer))
-                    .collect();
-                Ok(peers)
+                load_recent_peers_from_namespace(namespace)
             })
         });
     }
@@ -3524,6 +3529,106 @@ mod stored_peer_batch_profile_tests {
         assert_eq!(empty["peers"], serde_json::json!([]));
         assert_eq!(failed["ok"], false);
         assert!(failed["error"].as_str().unwrap().contains("unavailable"));
+    }
+
+    #[test]
+    fn recent_snapshot_reads_only_the_requested_logical_profiles_current_namespace() {
+        static CONFIG_PATH_LOCK: Mutex<()> = Mutex::new(());
+        let _lock = CONFIG_PATH_LOCK.lock().unwrap();
+        let old_app_name = config::APP_NAME.read().unwrap().clone();
+        let old_active = config::active_peer_profile();
+        let app_name = format!("rustdesk-recent-snapshot-test-{}", uuid::Uuid::new_v4());
+        *config::APP_NAME.write().unwrap() = app_name;
+        struct RestoreConfigPath {
+            app_name: String,
+            active: String,
+            root: std::path::PathBuf,
+        }
+        impl Drop for RestoreConfigPath {
+            fn drop(&mut self) {
+                *config::APP_NAME.write().unwrap() = self.app_name.clone();
+                let _ = config::set_active_peer_profile(&self.active);
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+        let root = config::Config::path("");
+        let _restore = RestoreConfigPath {
+            app_name: old_app_name,
+            active: old_active,
+            root: root.clone(),
+        };
+        let profiles = config::ServerProfilesConfig {
+            version: config::SERVER_PROFILES_VERSION,
+            active_profile_id: "office".to_owned(),
+            profiles: vec![
+                config::ServerProfile {
+                    id: "home".to_owned(),
+                    name: "Home".to_owned(),
+                    id_server: "home.example.com".to_owned(),
+                    key: "home-key".to_owned(),
+                    peer_namespace_id: "home-current".to_owned(),
+                    retired_peer_namespace_ids: vec!["home-retired".to_owned()],
+                },
+                config::ServerProfile {
+                    id: "office".to_owned(),
+                    name: "Office".to_owned(),
+                    id_server: "office.example.com".to_owned(),
+                    key: "office-key".to_owned(),
+                    peer_namespace_id: "office-current".to_owned(),
+                    retired_peer_namespace_ids: Vec::new(),
+                },
+                config::ServerProfile {
+                    id: "empty".to_owned(),
+                    name: "Empty".to_owned(),
+                    id_server: "empty.example.com".to_owned(),
+                    key: String::new(),
+                    peer_namespace_id: "empty-current".to_owned(),
+                    retired_peer_namespace_ids: Vec::new(),
+                },
+            ],
+        };
+        config::ServerProfileStore::with_root(&root)
+            .save(&profiles)
+            .unwrap();
+        for (namespace, peer_id) in [
+            ("home-current", "same-peer"),
+            ("home-current", "home-only"),
+            ("home-retired", "same-peer"),
+            ("home-retired", "retired-only"),
+            ("office-current", "same-peer"),
+            ("office-current", "office-only"),
+        ] {
+            let mut peer = PeerConfig::default();
+            peer.info.platform = "Linux".to_owned();
+            peer.store_for(namespace, peer_id).unwrap();
+        }
+        config::set_active_peer_profile("office-current").unwrap();
+
+        let load = |logical_profile_id: &str| {
+            recent_peers_snapshot_with(logical_profile_id, |logical| {
+                let namespace =
+                    crate::server_profiles::peer_namespace_for_config(&profiles, logical)?;
+                load_recent_peers_from_namespace(namespace)
+            })
+        };
+        let home: serde_json::Value = serde_json::from_str(&load("home")).unwrap();
+        let empty: serde_json::Value = serde_json::from_str(&load("empty")).unwrap();
+        let missing: serde_json::Value = serde_json::from_str(&load("missing")).unwrap();
+
+        assert_eq!(home["ok"], true);
+        let home_ids = home["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|peer| peer["id"].as_str().unwrap())
+            .collect::<HashSet<_>>();
+        assert_eq!(home_ids, HashSet::from(["home-only", "same-peer"]));
+        assert_eq!(empty["ok"], true);
+        assert_eq!(empty["peers"], serde_json::json!([]));
+        assert_eq!(missing["ok"], false);
+        assert!(missing["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()));
     }
 
     #[test]

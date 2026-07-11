@@ -135,4 +135,84 @@ void main() {
     );
     expect(model.peers.single.id, '...');
   });
+
+  test('malformed success snapshots preserve the previous snapshot', () async {
+    final malformed = <Map<String, Object?>>[
+      {
+        'ok': true,
+        'profile_id': 'home',
+        'peers': [],
+        'ids': [],
+        'error': 'success must not carry an error',
+      },
+      {
+        'ok': true,
+        'profile_id': 'home',
+        'peers': [
+          {'id': '', 'platform': 'Linux'}
+        ],
+        'ids': [],
+        'error': '',
+      },
+      {
+        'ok': true,
+        'profile_id': 'home',
+        'peers': [
+          {'id': 'peer', 'platform': 42}
+        ],
+        'ids': [],
+        'error': '',
+      },
+      {
+        'ok': true,
+        'profile_id': 'home',
+        'peers': [],
+        'ids': ['rest', 'rest'],
+        'error': '',
+      },
+      {
+        'ok': true,
+        'profile_id': 'home',
+        'peers': [],
+        'ids': [''],
+        'error': '',
+      },
+    ];
+
+    for (final value in malformed) {
+      final model = RecentPeersModel(loader: (_) async => jsonEncode(value))
+        ..peers = [Peer.loading()]
+        ..restPeerIds = ['previous'];
+
+      await expectLater(
+        model.refresh('home'),
+        throwsA(isA<RecentPeersLoadException>()),
+      );
+      expect(model.peers.single.id, '...');
+      expect(model.restPeerIds, ['previous']);
+    }
+  });
+
+  test('failed snapshots require a nonempty error and never apply payload',
+      () async {
+    for (final error in ['', '   ']) {
+      final model = RecentPeersModel(
+        loader: (_) async => jsonEncode({
+          'ok': false,
+          'profile_id': 'home',
+          'peers': [
+            {'id': 'must-not-apply', 'platform': 'Linux'}
+          ],
+          'ids': ['must-not-apply'],
+          'error': error,
+        }),
+      )..peers = [Peer.loading()];
+
+      await expectLater(
+        model.refresh('home'),
+        throwsA(isA<RecentPeersLoadException>()),
+      );
+      expect(model.peers.single.id, '...');
+    }
+  });
 }

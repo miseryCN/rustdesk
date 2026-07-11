@@ -391,21 +391,35 @@ _RecentPeersSnapshot _parseRecentPeersSnapshot(
     }
     if (decoded['ok'] != true) {
       final error = decoded['error'] as String;
-      throw RecentPeersLoadException(
-          error.isEmpty ? 'Recent connections could not be loaded.' : error);
+      if (error.trim().isEmpty) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      throw RecentPeersLoadException(error);
+    }
+    if ((decoded['error'] as String).isNotEmpty) {
+      throw const RecentPeersLoadException(
+          'Invalid recent connections response.');
     }
 
     final peers = <Peer>[];
+    final peerIds = <String>{};
     for (final rawPeer in decoded['peers'] as List) {
-      if (rawPeer is! Map<String, dynamic>) {
+      if (rawPeer is! Map<String, dynamic> || !_isValidPeerJson(rawPeer)) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      final id = rawPeer['id'] as String;
+      if (!peerIds.add(id)) {
         throw const RecentPeersLoadException(
             'Invalid recent connections response.');
       }
       peers.add(Peer.fromJson(rawPeer));
     }
     final ids = <String>[];
+    final restIds = <String>{};
     for (final id in decoded['ids'] as List) {
-      if (id is! String) {
+      if (id is! String || id.isEmpty || !restIds.add(id)) {
         throw const RecentPeersLoadException(
             'Invalid recent connections response.');
       }
@@ -418,4 +432,33 @@ _RecentPeersSnapshot _parseRecentPeersSnapshot(
     throw const RecentPeersLoadException(
         'Invalid recent connections response.');
   }
+}
+
+bool _isValidPeerJson(Map<String, dynamic> peer) {
+  final id = peer['id'];
+  if (id is! String || id.isEmpty) return false;
+
+  const stringFields = [
+    'hash',
+    'password',
+    'username',
+    'hostname',
+    'platform',
+    'alias',
+    'rdpPort',
+    'rdpUsername',
+    'loginName',
+    'device_group_name',
+  ];
+  for (final field in stringFields) {
+    final value = peer[field];
+    if (value != null && value is! String) return false;
+  }
+  final tags = peer['tags'];
+  if (tags != null && tags is! List) return false;
+  final forceAlwaysRelay = peer['forceAlwaysRelay'];
+  if (forceAlwaysRelay != null && forceAlwaysRelay is! String) return false;
+  final sameServer = peer['same_server'];
+  if (sameServer != null && sameServer is! bool) return false;
+  return true;
 }

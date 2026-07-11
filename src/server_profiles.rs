@@ -241,12 +241,7 @@ impl ServerProfileManager {
     }
 
     fn peer_namespace_for(&self, profile_id: &str) -> ResultType<&str> {
-        self.config
-            .profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .map(|profile| profile.peer_namespace_id.as_str())
-            .ok_or_else(|| anyhow!("server profile does not exist: {profile_id}"))
+        peer_namespace_for_config(&self.config, profile_id)
     }
 
     fn add(&mut self, name: &str, id_server: &str, key: &str) -> ResultType<ServerProfilesConfig> {
@@ -607,6 +602,18 @@ pub(crate) fn with_peer_namespace<T>(
     })?;
     manager.ensure_healthy()?;
     operation(manager.peer_namespace_for(profile_id)?)
+}
+
+pub(crate) fn peer_namespace_for_config<'a>(
+    config: &'a ServerProfilesConfig,
+    profile_id: &str,
+) -> ResultType<&'a str> {
+    config
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .map(|profile| profile.peer_namespace_id.as_str())
+        .ok_or_else(|| anyhow!("server profile does not exist: {profile_id}"))
 }
 
 pub(crate) fn retired_peer_namespaces() -> ResultType<Vec<String>> {
