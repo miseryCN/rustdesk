@@ -351,10 +351,9 @@ class RecentPeersModel extends Peers {
     if (_disposed) return Future.value();
     final sameIdentity = _profileId == profileId;
     if (!sameIdentity) {
-      _profileId = profileId;
-      _epoch += 1;
+      return invalidateAndRefresh(profileId);
     }
-    return _startLoad(profileId, _epoch, preserveOnline: sameIdentity);
+    return _startLoad(profileId, _epoch, preserveOnline: true);
   }
 
   Future<void> refreshSafely(String profileId) async {

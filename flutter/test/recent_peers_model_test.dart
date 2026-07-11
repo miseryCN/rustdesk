@@ -20,6 +20,18 @@ String _snapshot(String profileId, List<String> peerIds,
       'error': '',
     });
 
+Future<RecentPeersModel> _loadedHomeModelThen(String response) async {
+  var calls = 0;
+  final model = RecentPeersModel(loader: (_) async {
+    if (calls++ == 0) {
+      return _snapshot('home', ['previous-peer'], restIds: ['previous-rest']);
+    }
+    return response;
+  });
+  await model.refresh('home');
+  return model;
+}
+
 void main() {
   test('slow old profile result cannot overwrite the switched profile',
       () async {
@@ -100,7 +112,7 @@ void main() {
     expect(model.restPeerIds, isEmpty);
   });
 
-  test('I/O and parse failures preserve the previous snapshot and throw',
+  test('same-identity I/O and parse failures preserve the previous snapshot',
       () async {
     for (final response in [
       jsonEncode({
@@ -112,29 +124,27 @@ void main() {
       }),
       '{bad json',
     ]) {
-      final model = RecentPeersModel(loader: (_) async => response)
-        ..peers = [Peer.loading()]
-        ..restPeerIds = ['rest'];
+      final model = await _loadedHomeModelThen(response);
 
       await expectLater(
         model.refresh('home'),
         throwsA(isA<RecentPeersLoadException>()),
       );
-      expect(model.peers.single.id, '...');
-      expect(model.restPeerIds, ['rest']);
+      expect(model.peers.single.id, 'previous-peer');
+      expect(model.restPeerIds, ['previous-rest']);
     }
   });
 
   test('a mismatched profile response is rejected without mutation', () async {
-    final model = RecentPeersModel(
-      loader: (_) async => _snapshot('other', ['wrong-peer']),
-    )..peers = [Peer.loading()];
+    final model =
+        await _loadedHomeModelThen(_snapshot('other', ['wrong-peer']));
 
     await expectLater(
       model.refresh('home'),
       throwsA(isA<RecentPeersLoadException>()),
     );
-    expect(model.peers.single.id, '...');
+    expect(model.peers.single.id, 'previous-peer');
+    expect(model.restPeerIds, ['previous-rest']);
   });
 
   test('malformed success snapshots preserve the previous snapshot', () async {
@@ -181,39 +191,36 @@ void main() {
     ];
 
     for (final value in malformed) {
-      final model = RecentPeersModel(loader: (_) async => jsonEncode(value))
-        ..peers = [Peer.loading()]
-        ..restPeerIds = ['previous'];
+      final model = await _loadedHomeModelThen(jsonEncode(value));
 
       await expectLater(
         model.refresh('home'),
         throwsA(isA<RecentPeersLoadException>()),
       );
-      expect(model.peers.single.id, '...');
-      expect(model.restPeerIds, ['previous']);
+      expect(model.peers.single.id, 'previous-peer');
+      expect(model.restPeerIds, ['previous-rest']);
     }
   });
 
   test('failed snapshots require a nonempty error and never apply payload',
       () async {
     for (final error in ['', '   ']) {
-      final model = RecentPeersModel(
-        loader: (_) async => jsonEncode({
-          'ok': false,
-          'profile_id': 'home',
-          'peers': [
-            {'id': 'must-not-apply', 'platform': 'Linux'}
-          ],
-          'ids': ['must-not-apply'],
-          'error': error,
-        }),
-      )..peers = [Peer.loading()];
+      final model = await _loadedHomeModelThen(jsonEncode({
+        'ok': false,
+        'profile_id': 'home',
+        'peers': [
+          {'id': 'must-not-apply', 'platform': 'Linux'}
+        ],
+        'ids': ['must-not-apply'],
+        'error': error,
+      }));
 
       await expectLater(
         model.refresh('home'),
         throwsA(isA<RecentPeersLoadException>()),
       );
-      expect(model.peers.single.id, '...');
+      expect(model.peers.single.id, 'previous-peer');
+      expect(model.restPeerIds, ['previous-rest']);
     }
   });
 
@@ -232,6 +239,38 @@ void main() {
     expect(model.restPeerIds, isEmpty);
     expect(notifications, 1);
     pending.complete(jsonEncode({
+      'ok': false,
+      'profile_id': 'office',
+      'peers': [],
+      'ids': [],
+      'error': 'storage unavailable',
+    }));
+    await expectLater(refresh, throwsA(isA<RecentPeersLoadException>()));
+    expect(model.peers, isEmpty);
+    expect(model.restPeerIds, isEmpty);
+    expect(notifications, 1);
+  });
+
+  test('a normal refresh invalidates when the profile identity changes',
+      () async {
+    final office = Completer<String>();
+    final model = RecentPeersModel(loader: (profileId) {
+      if (profileId == 'home') {
+        return Future.value(_snapshot('home', ['home-peer'],
+            restIds: ['home-rest']));
+      }
+      return office.future;
+    });
+    await model.refresh('home');
+    var notifications = 0;
+    model.addListener(() => notifications += 1);
+
+    final refresh = model.refresh('office');
+
+    expect(model.peers, isEmpty);
+    expect(model.restPeerIds, isEmpty);
+    expect(notifications, 1);
+    office.complete(jsonEncode({
       'ok': false,
       'profile_id': 'office',
       'peers': [],
@@ -287,13 +326,14 @@ void main() {
     var notifications = 0;
     model.addListener(() => notifications += 1);
     final refresh = model.refresh('home');
+    expect(notifications, 1);
     expect(model.debugInFlightCount, 1);
 
     model.dispose();
     pending.complete(_snapshot('home', ['late-peer']));
     await refresh;
 
-    expect(notifications, 0);
+    expect(notifications, 1);
     expect(model.peers, isEmpty);
     expect(model.debugInFlightCount, 0);
   });
