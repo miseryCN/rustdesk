@@ -256,8 +256,8 @@ void main() {
     final office = Completer<String>();
     final model = RecentPeersModel(loader: (profileId) {
       if (profileId == 'home') {
-        return Future.value(_snapshot('home', ['home-peer'],
-            restIds: ['home-rest']));
+        return Future.value(
+            _snapshot('home', ['home-peer'], restIds: ['home-rest']));
       }
       return office.future;
     });
