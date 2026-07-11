@@ -308,7 +308,7 @@ void main() {
     expect(model.addCalls, hasLength(1));
   });
 
-  testWidgets('server test result is cleared and stale results are ignored',
+  testWidgets('editing server invalidates request and allows a newer test',
       (tester) async {
     final first = Completer<String>();
     final second = Completer<String>();
@@ -334,11 +334,27 @@ void main() {
 
     await tester.enterText(
         find.byKey(const Key('profile-id-server')), ' second.example.com ');
+    await tester.pump();
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('test-profile-server')))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.byKey(const Key('test-profile-server')));
+    await tester.pump();
+
     first.complete('first result');
     await tester.pump();
     expect(find.text('translated:first result'), findsNothing);
+    expect(find.text('translated:second result'), findsNothing);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('test-profile-server')))
+          .onPressed,
+      isNull,
+    );
 
-    await tester.tap(find.byKey(const Key('test-profile-server')));
     second.complete('second result');
     await tester.pump();
     expect(find.text('translated:second result'), findsOneWidget);
@@ -348,6 +364,39 @@ void main() {
         find.byKey(const Key('profile-id-server')), 'third.example.com');
     await tester.pump();
     expect(find.text('translated:second result'), findsNothing);
+  });
+
+  testWidgets('editing away and back still invalidates the old server test',
+      (tester) async {
+    final pending = Completer<String>();
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(
+      tester,
+      model,
+      testServer: (_) => pending.future,
+    );
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+    final field = find.byKey(const Key('profile-id-server'));
+    await tester.enterText(field, 'same.example.com');
+    await tester.tap(find.byKey(const Key('test-profile-server')));
+    await tester.pump();
+
+    await tester.enterText(field, 'different.example.com');
+    await tester.enterText(field, 'same.example.com');
+    pending.complete('old result');
+    await tester.pump();
+
+    expect(find.text('translated:old result'), findsNothing);
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('test-profile-server')))
+          .onPressed,
+      isNotNull,
+    );
   });
 
   testWidgets('field labels and validation use the injected translator',

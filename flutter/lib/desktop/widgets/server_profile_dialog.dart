@@ -414,9 +414,11 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
                 controller: _idServerController,
                 enabled: !widget.busy,
                 onChanged: (_) {
-                  if (_testResult != null) {
-                    setState(() => _testResult = null);
-                  }
+                  setState(() {
+                    _testRequest += 1;
+                    _testResult = null;
+                    _testing = false;
+                  });
                 },
                 decoration: InputDecoration(
                   labelText: widget.translator('ID Server'),
