@@ -34,11 +34,19 @@ class FakeServerProfileApi implements ServerProfileApi {
   String removeResponse = _response();
   String switchResponse = _response();
   String recoverResponse = _response();
+  Completer<String>? pendingGet;
   Completer<String>? pendingSwitch;
+  Object? getError;
+  int getCalls = 0;
   int switchCalls = 0;
 
   @override
-  Future<String> getProfiles() async => getResponse;
+  Future<String> getProfiles() {
+    getCalls += 1;
+    final error = getError;
+    if (error != null) return Future.error(error);
+    return pendingGet?.future ?? Future.value(getResponse);
+  }
 
   @override
   Future<String> addProfile(String name, String idServer, String key) async =>
@@ -63,6 +71,37 @@ class FakeServerProfileApi implements ServerProfileApi {
 }
 
 void main() {
+  test('initialize coalesces concurrent calls and remains idempotent',
+      () async {
+    final pending = Completer<String>();
+    final api = FakeServerProfileApi()..pendingGet = pending;
+    final model = ServerProfileModel(api: api);
+
+    final first = model.initialize();
+    final second = model.initialize();
+    expect(api.getCalls, 1);
+
+    pending.complete(_response());
+    await Future.wait([first, second]);
+    await model.initialize();
+
+    expect(api.getCalls, 1);
+    expect(model.activeProfileId, 'default');
+  });
+
+  test('initialize can retry after a failed attempt', () async {
+    final api = FakeServerProfileApi()..getError = StateError('offline');
+    final model = ServerProfileModel(api: api);
+
+    await expectLater(
+        model.initialize(), throwsA(isA<ServerProfileException>()));
+    api.getError = null;
+    await model.initialize();
+
+    expect(api.getCalls, 2);
+    expect(model.activeProfileId, 'default');
+  });
+
   test('recent peer refresh restores both lists when loading fails', () async {
     final peers = <String>['peer-1'];
     final restPeerIds = <String>['peer-2'];

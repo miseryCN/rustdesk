@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/desktop/widgets/server_profile_dialog.dart';
+import 'package:flutter_hbb/desktop/widgets/server_profile_selector.dart';
 import 'package:flutter_hbb/models/server_profile_model.dart';
+import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class FakeServerProfileModel extends ServerProfileModelBase {
@@ -14,14 +16,19 @@ class FakeServerProfileModel extends ServerProfileModelBase {
         _activeProfileId = activeProfileId;
 
   final List<ServerProfile> _profiles;
-  final String _activeProfileId;
+  String _activeProfileId;
   bool busyValue = false;
+  bool loadingValue = false;
+  bool switchingValue = false;
   String? errorValue;
   Object? addError;
+  Object? switchError;
   Completer<void>? pendingAdd;
+  Completer<void>? pendingSwitch;
   final addCalls = <(String, String, String)>[];
   final updateCalls = <(String, String, String, String)>[];
   final removeCalls = <String>[];
+  final switchCalls = <String>[];
 
   @override
   ServerProfile get active =>
@@ -37,13 +44,13 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   String? get error => errorValue;
 
   @override
-  bool get loading => false;
+  bool get loading => loadingValue;
 
   @override
   List<ServerProfile> get profiles => _profiles;
 
   @override
-  bool get switching => false;
+  bool get switching => switchingValue;
 
   @override
   Future<void> add(String name, String idServer, String key) async {
@@ -62,7 +69,14 @@ class FakeServerProfileModel extends ServerProfileModelBase {
   }
 
   @override
-  Future<void> switchTo(String id) async {}
+  Future<void> switchTo(String id) async {
+    switchCalls.add(id);
+    await pendingSwitch?.future;
+    final error = switchError;
+    if (error != null) throw error;
+    _activeProfileId = id;
+    notifyListeners();
+  }
 
   @override
   Future<void> update(
@@ -459,6 +473,223 @@ void main() {
           .widget<IconButton>(find.byKey(const Key('delete-other')))
           .onPressed,
       isNull,
+    );
+  });
+
+  Future<void> pumpSelector(
+    WidgetTester tester,
+    FakeServerProfileModel model, {
+    ValueChanged<String>? toast,
+  }) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ServerProfileSelector(
+            model: model,
+            translator: (value) => 'translated:$value',
+            showToast: toast,
+          ),
+        ),
+      ),
+    );
+  }
+
+  testWidgets('selecting another profile switches exactly once',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpSelector(tester, model);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('profile-option-other')));
+    await tester.pumpAndSettle();
+
+    expect(model.switchCalls, ['other']);
+    expect(find.text('Other'), findsOneWidget);
+  });
+
+  testWidgets('selecting the current profile does not switch', (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpSelector(tester, model);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('profile-current-active')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('profile-option-active')));
+    await tester.pumpAndSettle();
+
+    expect(model.switchCalls, isEmpty);
+  });
+
+  testWidgets('switching shows progress and prevents duplicate selection',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    )
+      ..busyValue = true
+      ..switchingValue = true;
+    await pumpSelector(tester, model);
+
+    expect(
+      tester
+          .widget<InkWell>(
+            find.byKey(const Key('server-profile-selector')),
+          )
+          .onTap,
+      isNull,
+    );
+    expect(
+      find.byKey(const Key('server-profile-switch-progress')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('settings opens the server profile dialog', (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpSelector(tester, model);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('server-profile-settings')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ServerProfileDialog), findsOneWidget);
+  });
+
+  testWidgets('switch errors are toasted without exposing profile keys',
+      (tester) async {
+    final messages = <String>[];
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    )..switchError = const ServerProfileException(
+        'rejected other-secret',
+      );
+    await pumpSelector(tester, model, toast: messages.add);
+
+    await tester.tap(find.byKey(const Key('server-profile-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('profile-option-other')));
+    await tester.pumpAndSettle();
+
+    expect(messages, hasLength(1));
+    expect(messages.single, contains('rejected'));
+    expect(messages.single, isNot(contains('other-secret')));
+    expect(model.activeProfileId, 'active');
+  });
+
+  testWidgets('selector presents ready connecting and not-ready states',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpSelector(tester, model);
+
+    stateGlobal.svcStatus.value = SvcStatus.ready;
+    await tester.pump();
+    expect(find.text('translated:Ready'), findsOneWidget);
+
+    stateGlobal.svcStatus.value = SvcStatus.connecting;
+    await tester.pump();
+    expect(find.text('translated:connecting_status'), findsOneWidget);
+
+    stateGlobal.svcStatus.value = SvcStatus.notReady;
+    await tester.pump();
+    expect(find.text('translated:not_ready_status'), findsOneWidget);
+  });
+
+  testWidgets('loading state is safe before profiles are available',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: const [],
+      activeProfileId: 'missing',
+    )
+      ..busyValue = true
+      ..loadingValue = true;
+    await pumpSelector(tester, model);
+
+    expect(find.text('translated:Loading...'), findsOneWidget);
+    expect(
+      tester
+          .widget<InkWell>(
+            find.byKey(const Key('server-profile-selector')),
+          )
+          .onTap,
+      isNull,
+    );
+  });
+
+  testWidgets('responsive header keeps selector and card visible when narrow',
+      (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 500));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ServerProfileHomeHeader(
+            connectionCard: SizedBox(
+              key: Key('connection-card'),
+              width: 360,
+              height: 100,
+            ),
+            selector: SizedBox(
+              key: Key('selector-slot'),
+              width: 220,
+              height: 40,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('connection-card')), findsOneWidget);
+    expect(find.byKey(const Key('selector-slot')), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('selector-slot'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('connection-card'))).dy),
+    );
+  });
+
+  testWidgets('responsive header uses one row when wide', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(900, 500));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ServerProfileHomeHeader(
+            connectionCard: SizedBox(
+              key: Key('connection-card'),
+              width: 360,
+              height: 100,
+            ),
+            selector: SizedBox(
+              key: Key('selector-slot'),
+              width: 220,
+              height: 40,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.getTopLeft(find.byKey(const Key('selector-slot'))).dy,
+      tester.getTopLeft(find.byKey(const Key('connection-card'))).dy,
     );
   });
 }

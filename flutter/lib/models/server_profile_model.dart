@@ -201,6 +201,8 @@ class ServerProfileModel extends ServerProfileModelBase {
   final ServerProfileApi _api;
   final FutureOr<void> Function()? _refreshRecentPeers;
   ServerProfilesState? _state;
+  Future<void>? _initializeFuture;
+  bool _initialized = false;
   bool _busy = false;
   bool _loading = false;
   bool _switching = false;
@@ -231,7 +233,24 @@ class ServerProfileModel extends ServerProfileModelBase {
   @override
   String? get error => _error;
 
-  Future<void> initialize() => load();
+  Future<void> initialize() {
+    if (_initialized) return Future.value();
+    final pending = _initializeFuture;
+    if (pending != null) return pending;
+
+    late final Future<void> tracked;
+    tracked = load().then(
+      (_) {
+        _initialized = true;
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _initializeFuture = null;
+        Error.throwWithStackTrace(error, stackTrace);
+      },
+    );
+    _initializeFuture = tracked;
+    return tracked;
+  }
 
   Future<void> load() => _run(
         request: _api.getProfiles,
