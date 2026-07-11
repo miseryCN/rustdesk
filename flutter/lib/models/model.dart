@@ -21,6 +21,7 @@ import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
 import 'package:flutter_hbb/models/server_model.dart';
+import 'package:flutter_hbb/models/server_profile_model.dart';
 import 'package:flutter_hbb/models/user_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/models/desktop_render_texture.dart';
@@ -3663,6 +3664,43 @@ enum ConnType {
   terminal
 }
 
+class _RustdeskServerProfileApi implements ServerProfileApi {
+  @override
+  Future<String> getProfiles() => bind.mainGetServerProfiles();
+
+  @override
+  Future<String> addProfile(String name, String idServer, String key) =>
+      bind.mainAddServerProfile(name: name, idServer: idServer, key: key);
+
+  @override
+  Future<String> updateProfile(
+          String id, String name, String idServer, String key) =>
+      bind.mainUpdateServerProfile(
+          id: id, name: name, idServer: idServer, key: key);
+
+  @override
+  Future<String> removeProfile(String id) =>
+      bind.mainDeleteServerProfile(id: id);
+
+  @override
+  Future<String> switchProfile(String id) =>
+      bind.mainSwitchServerProfile(id: id);
+
+  @override
+  Future<String> recoverProfiles() => bind.mainRecoverServerProfiles();
+}
+
+class _ServerProfileRecentPeers extends Peers {
+  _ServerProfileRecentPeers()
+      : super(
+          name: PeersModelName.recent,
+          loadEvent: LoadEvent.recent,
+          getInitPeers: null,
+        );
+
+  void notifyForServerProfile() => notifyListeners();
+}
+
 /// Flutter state manager and data communication with the Rust core.
 class FFI {
   var id = '';
@@ -3694,6 +3732,7 @@ class FFI {
   late final Peers recentPeersModel; // global
   late final Peers favoritePeersModel; // global
   late final Peers lanPeersModel; // global
+  late final ServerProfileModel serverProfileModel; // global
 
   // Terminal model registry for multiple terminals
   final Map<int, TerminalModel> _terminalModels = {};
@@ -3720,16 +3759,23 @@ class FFI {
     elevationModel = ElevationModel(WeakReference(this));
     cmFileModel = CmFileModel(WeakReference(this));
     textureModel = TextureModel(WeakReference(this));
-    recentPeersModel = Peers(
-        name: PeersModelName.recent,
-        loadEvent: LoadEvent.recent,
-        getInitPeers: null);
+    final recentPeers = _ServerProfileRecentPeers();
+    recentPeersModel = recentPeers;
     favoritePeersModel = Peers(
         name: PeersModelName.favorite,
         loadEvent: LoadEvent.favorite,
         getInitPeers: null);
     lanPeersModel = Peers(
         name: PeersModelName.lan, loadEvent: LoadEvent.lan, getInitPeers: null);
+    serverProfileModel = ServerProfileModel(
+      api: _RustdeskServerProfileApi(),
+      refreshRecentPeers: () => refreshRecentPeersTransaction(
+        peers: recentPeers.peers,
+        restPeerIds: recentPeers.restPeerIds,
+        notify: recentPeers.notifyForServerProfile,
+        load: bind.mainLoadRecentPeers,
+      ),
+    );
   }
 
   /// Mobile reuse FFI

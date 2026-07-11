@@ -2062,39 +2062,69 @@ pub fn main_init(app_dir: String, custom_client_config: String) {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_get_server_profiles() -> String {
-    crate::server_profiles::get()
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::get();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    server_profiles_unavailable_response()
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_add_server_profile(name: String, id_server: String, key: String) -> String {
-    crate::server_profiles::add(&name, &id_server, &key)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::add(&name, &id_server, &key);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (name, id_server, key);
+        server_profiles_unavailable_response()
+    }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_update_server_profile(
     id: String,
     name: String,
     id_server: String,
     key: String,
 ) -> String {
-    crate::server_profiles::update(&id, &name, &id_server, &key)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::update(&id, &name, &id_server, &key);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (id, name, id_server, key);
+        server_profiles_unavailable_response()
+    }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_delete_server_profile(id: String) -> String {
-    crate::server_profiles::remove(&id)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::remove(&id);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = id;
+        server_profiles_unavailable_response()
+    }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_switch_server_profile(id: String) -> String {
-    crate::server_profiles::switch(&id)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::switch(&id);
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = id;
+        server_profiles_unavailable_response()
+    }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_recover_server_profiles() -> String {
-    crate::server_profiles::recover()
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return crate::server_profiles::recover();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    server_profiles_unavailable_response()
+}
+
+#[cfg(any(test, target_os = "android", target_os = "ios"))]
+fn server_profiles_unavailable_response() -> String {
+    r#"{"ok":false,"error":"Server profiles are unavailable on this platform.","config":null}"#
+        .to_owned()
 }
 
 pub fn main_device_id(id: String) {
@@ -3372,6 +3402,19 @@ pub fn session_get_common(
 #[cfg(test)]
 mod stored_peer_batch_profile_tests {
     use super::*;
+
+    #[test]
+    fn unavailable_server_profiles_response_is_safe_and_well_formed() {
+        let response = server_profiles_unavailable_response();
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["config"], serde_json::Value::Null);
+        assert!(value["error"]
+            .as_str()
+            .is_some_and(|error| !error.is_empty()));
+        assert!(!response.contains("key"));
+    }
 
     #[test]
     fn stored_peer_batch_returns_the_recorded_profile() {
