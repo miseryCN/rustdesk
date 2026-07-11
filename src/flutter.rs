@@ -1358,7 +1358,7 @@ pub fn session_add(
     };
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let profile_id = crate::server_profiles::capture_active_profile_id()?;
+    let profile_id = crate::server_profiles::capture_active_peer_namespace()?;
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let profile_id = hbb_common::config::active_peer_profile();
     session.lc.write().unwrap().initialize(

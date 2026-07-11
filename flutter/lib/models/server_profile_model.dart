@@ -282,6 +282,13 @@ class ServerProfileModel extends ServerProfileModelBase {
         request: () => _api.updateProfile(id, name, idServer, key),
         loading: true,
         sensitiveValues: [key],
+        refreshRecentPeersWhen: (previous, next) {
+          if (previous == null || previous.activeProfileId != id) return false;
+          final oldProfile = previous.active;
+          final newProfile = next.active;
+          return oldProfile.idServer != newProfile.idServer ||
+              oldProfile.key != newProfile.key;
+        },
       );
 
   @override
@@ -310,6 +317,8 @@ class ServerProfileModel extends ServerProfileModelBase {
     bool loading = false,
     bool switching = false,
     bool refreshRecentPeers = false,
+    bool Function(ServerProfilesState? previous, ServerProfilesState next)?
+        refreshRecentPeersWhen,
     Iterable<String> sensitiveValues = const [],
   }) async {
     if (_busy) {
@@ -329,9 +338,11 @@ class ServerProfileModel extends ServerProfileModelBase {
         response,
         sensitiveValues: sensitiveValues,
       );
+      final shouldRefresh = refreshRecentPeers ||
+          (refreshRecentPeersWhen?.call(_state, nextState) ?? false);
       _state = nextState;
       notifyListeners();
-      if (refreshRecentPeers) {
+      if (shouldRefresh) {
         await _refreshRecentPeersNow();
       } else if (_recentPeersStale) {
         _error = _recentPeersStaleMessage;

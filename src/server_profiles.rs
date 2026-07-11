@@ -199,7 +199,7 @@ impl ServerProfileManager {
                 runtime_rollback,
             ));
         }
-        if let Err(error) = runtime.set(&config.active_profile_id) {
+        if let Err(error) = runtime.set(config.active_peer_namespace()?) {
             let options_rollback = options.apply(old_options);
             let runtime_rollback = runtime.set(&old_runtime);
             return Err(initialization_rollback_error(
@@ -234,6 +234,10 @@ impl ServerProfileManager {
 
     fn active_profile_id(&self) -> &str {
         &self.config.active_profile_id
+    }
+
+    fn active_peer_namespace(&self) -> ResultType<&str> {
+        self.config.active_peer_namespace()
     }
 
     fn add(&mut self, name: &str, id_server: &str, key: &str) -> ResultType<ServerProfilesConfig> {
@@ -274,14 +278,25 @@ impl ServerProfileManager {
 
     fn remove(&mut self, id: &str) -> ResultType<ServerProfilesConfig> {
         self.ensure_healthy()?;
+        let removed = self
+            .config
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("server profile does not exist: {id}"))?;
         let updated = self
             .store
             .remove_profile_transaction(&self.config, id)
             .context("failed to remove server profile")?;
         self.config = updated;
-        hbb_common::config::purge_new_stored_peers_for_profile(id);
-        #[cfg(feature = "flutter")]
-        crate::flutter_ffi::purge_stored_peer_events_for_profile(id);
+        for namespace in std::iter::once(&removed.peer_namespace_id)
+            .chain(removed.retired_peer_namespace_ids.iter())
+        {
+            hbb_common::config::purge_new_stored_peers_for_profile(namespace);
+            #[cfg(feature = "flutter")]
+            crate::flutter_ffi::purge_stored_peer_events_for_profile(namespace);
+        }
         Ok(self.snapshot())
     }
 
@@ -319,7 +334,7 @@ impl ServerProfileManager {
                 &old_runtime,
             ));
         }
-        if let Err(runtime_error) = self.runtime.set(&candidate.active_profile_id) {
+        if let Err(runtime_error) = self.runtime.set(&profile.peer_namespace_id) {
             return Err(self.rollback_activation(
                 "failed to activate server profile runtime",
                 runtime_error,
@@ -414,7 +429,41 @@ fn apply_profile_options(
 pub(crate) struct ServerProfileResponse {
     ok: bool,
     error: String,
-    config: Option<ServerProfilesConfig>,
+    config: Option<PublicServerProfilesConfig>,
+}
+
+#[derive(Serialize)]
+struct PublicServerProfilesConfig {
+    version: u32,
+    active_profile_id: String,
+    profiles: Vec<PublicServerProfile>,
+}
+
+#[derive(Serialize)]
+struct PublicServerProfile {
+    id: String,
+    name: String,
+    id_server: String,
+    key: String,
+}
+
+impl From<ServerProfilesConfig> for PublicServerProfilesConfig {
+    fn from(config: ServerProfilesConfig) -> Self {
+        Self {
+            version: config.version,
+            active_profile_id: config.active_profile_id,
+            profiles: config
+                .profiles
+                .into_iter()
+                .map(|profile| PublicServerProfile {
+                    id: profile.id,
+                    name: profile.name,
+                    id_server: profile.id_server,
+                    key: profile.key,
+                })
+                .collect(),
+        }
+    }
 }
 
 fn response_json(result: ResultType<ServerProfilesConfig>) -> String {
@@ -425,7 +474,11 @@ fn response_json(result: ResultType<ServerProfilesConfig>) -> String {
 }
 
 fn response_json_parts(ok: bool, error: String, config: Option<ServerProfilesConfig>) -> String {
-    let response = ServerProfileResponse { ok, error, config };
+    let response = ServerProfileResponse {
+        ok,
+        error,
+        config: config.map(PublicServerProfilesConfig::from),
+    };
     serde_json::to_string(&response).unwrap_or_else(|_| SERIALIZATION_ERROR_JSON.to_owned())
 }
 
@@ -510,7 +563,7 @@ pub(crate) fn get() -> String {
     })
 }
 
-pub(crate) fn capture_active_profile_id() -> ResultType<String> {
+pub(crate) fn capture_active_peer_namespace() -> ResultType<String> {
     let state = MANAGER
         .lock()
         .map_err(|_| anyhow!("server profile manager lock is poisoned"))?;
@@ -524,7 +577,29 @@ pub(crate) fn capture_active_profile_id() -> ResultType<String> {
         )
     })?;
     manager.ensure_healthy()?;
-    Ok(manager.active_profile_id().to_owned())
+    Ok(manager.active_peer_namespace()?.to_owned())
+}
+
+pub(crate) fn retired_peer_namespaces() -> ResultType<Vec<String>> {
+    let state = MANAGER
+        .lock()
+        .map_err(|_| anyhow!("server profile manager lock is poisoned"))?;
+    let manager = state.manager.as_ref().ok_or_else(|| {
+        anyhow!(
+            "{}",
+            state
+                .init_error
+                .as_deref()
+                .unwrap_or("server profile manager is not initialized")
+        )
+    })?;
+    manager.ensure_healthy()?;
+    Ok(manager
+        .config
+        .profiles
+        .iter()
+        .flat_map(|profile| profile.retired_peer_namespace_ids.iter().cloned())
+        .collect())
 }
 
 pub(crate) fn add(name: &str, id_server: &str, key: &str) -> String {
@@ -846,6 +921,8 @@ mod tests {
             name: name.to_owned(),
             id_server: id_server.to_owned(),
             key: key.to_owned(),
+            peer_namespace_id: id.to_owned(),
+            retired_peer_namespace_ids: Vec::new(),
         }
     }
 
@@ -967,6 +1044,62 @@ mod tests {
         );
         assert_eq!(options.get("keep-me").map(String::as_str), Some("yes"));
         assert!(!options.contains_key("relay-server"));
+    }
+
+    #[test]
+    fn active_identity_update_rotates_runtime_to_the_new_peer_namespace() {
+        let mut fixture = fixture();
+        let old_namespace = fixture.manager.snapshot().profiles[0]
+            .peer_namespace_id
+            .clone();
+
+        fixture
+            .manager
+            .update("home", "Home", "new-home.example.com", "new-key")
+            .expect("active identity update should succeed");
+
+        let active = fixture
+            .manager
+            .snapshot()
+            .active()
+            .expect("active profile")
+            .clone();
+        assert_ne!(active.peer_namespace_id, old_namespace);
+        assert_eq!(active.retired_peer_namespace_ids, vec![old_namespace]);
+        assert_eq!(
+            &*fixture.runtime.lock().expect("runtime lock"),
+            &active.peer_namespace_id
+        );
+    }
+
+    #[test]
+    fn nonactive_identity_update_does_not_change_active_runtime() {
+        let mut fixture = fixture();
+
+        fixture
+            .manager
+            .update("office", "Office", "new-office.example.com", "new-key")
+            .expect("non-active identity update should succeed");
+
+        assert_eq!(&*fixture.runtime.lock().expect("runtime lock"), "home");
+    }
+
+    #[test]
+    fn active_identity_update_failure_rolls_back_namespace_options_and_runtime() {
+        let mut fixture = fixture();
+        let old_config = fixture.manager.snapshot();
+        let old_options = fixture.options.lock().expect("options lock").clone();
+        *fixture.fail_next.lock().expect("failure lock") = true;
+
+        assert!(fixture
+            .manager
+            .update("home", "Home", "new-home.example.com", "new-key")
+            .is_err());
+
+        assert_eq!(fixture.manager.snapshot(), old_config);
+        assert_eq!(fixture.store.load().expect("stored config"), old_config);
+        assert_eq!(*fixture.options.lock().expect("options lock"), old_options);
+        assert_eq!(&*fixture.runtime.lock().expect("runtime lock"), "home");
     }
 
     #[test]
@@ -1107,6 +1240,19 @@ mod tests {
     }
 
     #[test]
+    fn successful_response_does_not_expose_internal_peer_namespaces() {
+        let mut config = ServerProfilesConfig::default_with("server.example.com", "key");
+        config.profiles[0].peer_namespace_id = "internal-current".to_owned();
+        config.profiles[0].retired_peer_namespace_ids = vec!["internal-retired".to_owned()];
+
+        let response = response_json(Ok(config));
+
+        assert!(!response.contains("peer_namespace"));
+        assert!(!response.contains("internal-current"));
+        assert!(!response.contains("internal-retired"));
+    }
+
+    #[test]
     fn initialization_keeps_existing_profiles_and_activates_persisted_profile() {
         let root = TempRoot::new();
         let store = ServerProfileStore::with_root(&root.0);
@@ -1230,7 +1376,7 @@ mod tests {
                 .send(())
                 .expect("signal capture invocation");
             capture_tx
-                .send(capture_active_profile_id())
+                .send(capture_active_peer_namespace())
                 .expect("send capture result");
         });
         capture_entered_rx

@@ -4482,6 +4482,71 @@ mod server_profile_session_tests {
     }
 
     #[test]
+    fn retired_session_can_write_without_polluting_the_current_namespace() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let store = hbb_common::config::ServerProfileStore::with_root(config::Config::path(""));
+        let mut profiles =
+            hbb_common::config::ServerProfilesConfig::default_with("new.example.com", "new-key");
+        profiles.profiles[0].peer_namespace_id = "new-space".to_owned();
+        profiles.profiles[0].retired_peer_namespace_ids = vec!["old-space".to_owned()];
+        store.save(&profiles).expect("profiles should save");
+        let peer_id = format!("retired-write-test-{}", rand::random::<u64>());
+        let mut old_session = initialize_handler_for_peer("old-space", peer_id.clone());
+
+        old_session.set_option("alias".to_owned(), "old alias".to_owned());
+
+        assert_eq!(
+            PeerConfig::try_load_for("old-space", &peer_id)
+                .expect("retired peer should load")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("old alias".to_owned())
+        );
+        assert_eq!(
+            PeerConfig::try_load_for("new-space", &peer_id).expect("current peer should load"),
+            None
+        );
+    }
+
+    #[test]
+    fn same_peer_id_keeps_credentials_isolated_across_identity_namespaces() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let store = hbb_common::config::ServerProfileStore::with_root(config::Config::path(""));
+        let mut profiles =
+            hbb_common::config::ServerProfilesConfig::default_with("new.example.com", "new-key");
+        profiles.profiles[0].peer_namespace_id = "new-space".to_owned();
+        profiles.profiles[0].retired_peer_namespace_ids = vec!["old-space".to_owned()];
+        store.save(&profiles).expect("profiles should save");
+        let peer_id = format!("credential-isolation-test-{}", rand::random::<u64>());
+        let mut old_peer = PeerConfig::default();
+        old_peer.password = b"old-password".to_vec();
+        old_peer
+            .store_for("old-space", &peer_id)
+            .expect("old credential should save");
+        let mut new_peer = PeerConfig::default();
+        new_peer.password = b"new-password".to_vec();
+        new_peer
+            .store_for("new-space", &peer_id)
+            .expect("new credential should save");
+
+        assert_eq!(
+            PeerConfig::try_load_for("old-space", &peer_id)
+                .expect("old credential should load")
+                .expect("old peer should exist")
+                .password,
+            b"old-password"
+        );
+        assert_eq!(
+            PeerConfig::try_load_for("new-space", &peer_id)
+                .expect("new credential should load")
+                .expect("new peer should exist")
+                .password,
+            b"new-password"
+        );
+    }
+
+    #[test]
     fn corrupt_peer_config_is_not_overwritten_by_session_updates() {
         let _lock = TEST_ENV.lock().expect("test environment lock");
         let _root = TestConfigRoot::enter();

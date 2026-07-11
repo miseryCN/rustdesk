@@ -1535,6 +1535,13 @@ fn take_new_stored_peers_for_profile(
     peers
 }
 
+fn discard_stored_peers_for_namespaces(
+    stored: &mut HashSet<(String, String)>,
+    namespaces: &[String],
+) {
+    stored.retain(|(stored_namespace, _)| !namespaces.contains(stored_namespace));
+}
+
 fn stored_peer_to_map(peer_id: String, peer: PeerConfig) -> Option<HashMap<&'static str, String>> {
     if peer.info.platform.is_empty() {
         None
@@ -1545,6 +1552,18 @@ fn stored_peer_to_map(peer_id: String, peer: PeerConfig) -> Option<HashMap<&'sta
 
 pub fn main_get_new_stored_peers() -> String {
     let profile_id = config::active_peer_profile();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    if let Ok(retired) = crate::server_profiles::retired_peer_namespaces() {
+        let mut pending = PENDING_STORED_PEER_BATCH.lock().unwrap();
+        for namespace in &retired {
+            pending.purge_profile(namespace);
+        }
+        drop(pending);
+        discard_stored_peers_for_namespaces(
+            &mut config::NEW_STORED_PEER_CONFIG.lock().unwrap(),
+            &retired,
+        );
+    }
     if let Some(peers) = PENDING_STORED_PEER_BATCH
         .lock()
         .unwrap()
@@ -3457,15 +3476,11 @@ mod stored_peer_batch_profile_tests {
     }
 
     #[test]
-    fn old_session_event_waits_until_its_source_profile_is_active() {
+    fn retired_session_event_is_discarded_and_never_reaches_the_current_home() {
         let mut stored = HashSet::from([("home".to_owned(), "same-peer".to_owned())]);
 
         assert!(take_new_stored_peers_for_profile(&mut stored, "office").is_empty());
-        assert!(stored.contains(&("home".to_owned(), "same-peer".to_owned())));
-        assert_eq!(
-            take_new_stored_peers_for_profile(&mut stored, "home"),
-            vec!["same-peer"]
-        );
+        discard_stored_peers_for_namespaces(&mut stored, &["home".to_owned()]);
         assert!(stored.is_empty());
     }
 

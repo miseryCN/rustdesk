@@ -374,6 +374,74 @@ void main() {
     expect(refreshes, 1);
   });
 
+  test('active identity update refreshes recent peers exactly once', () async {
+    final api = FakeServerProfileApi()
+      ..updateResponse = _response(
+        profiles: [
+          {
+            'id': 'default',
+            'name': 'Default',
+            'id_server': 'new.example.com',
+            'key': 'new-key',
+          },
+        ],
+      );
+    var refreshes = 0;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => refreshes += 1,
+    );
+    await model.load();
+
+    await model.update('default', 'Default', 'new.example.com', 'new-key');
+
+    expect(refreshes, 1);
+  });
+
+  test('rename and nonactive identity updates do not refresh recent peers',
+      () async {
+    final api = FakeServerProfileApi();
+    var refreshes = 0;
+    final model = ServerProfileModel(
+      api: api,
+      refreshRecentPeers: () => refreshes += 1,
+    );
+    await model.load();
+
+    api.updateResponse = _response(
+      profiles: [
+        {
+          'id': 'default',
+          'name': 'Renamed',
+          'id_server': 'default.example.com',
+          'key': 'default-key',
+        },
+      ],
+    );
+    await model.update(
+        'default', 'Renamed', 'default.example.com', 'default-key');
+
+    api.updateResponse = _response(
+      profiles: [
+        {
+          'id': 'default',
+          'name': 'Renamed',
+          'id_server': 'default.example.com',
+          'key': 'default-key',
+        },
+        {
+          'id': 'other',
+          'name': 'Other',
+          'id_server': 'changed.example.com',
+          'key': 'changed-key',
+        },
+      ],
+    );
+    await model.update('other', 'Other', 'changed.example.com', 'changed-key');
+
+    expect(refreshes, 0);
+  });
+
   test('failed switch response does not refresh recent peers', () async {
     final api = FakeServerProfileApi()
       ..switchResponse = jsonEncode({
