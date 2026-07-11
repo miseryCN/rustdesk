@@ -1,0 +1,48 @@
+stages:
+  - sync
+  - verify
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH == "master"'
+
+default:
+  interruptible: true
+
+upstream-sync:
+  stage: sync
+  tags:
+    - gitlab--duo
+  resource_group: upstream-sync
+  variables:
+    GIT_STRATEGY: fetch
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $UPSTREAM_SYNC == "1"'
+    - if: '$CI_PIPELINE_SOURCE == "web" && $UPSTREAM_SYNC == "1"'
+  script:
+    - bash .gitlab/ci/sync-upstream.sh
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - upstream-sync-report.md
+
+verify-source:
+  stage: verify
+  tags:
+    - gitlab--duo
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "master"'
+  script:
+    - |
+      base_sha="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_COMMIT_BEFORE_SHA:-}}"
+      if [[ -n "$base_sha" ]] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+        git diff --check "$base_sha" "$CI_COMMIT_SHA"
+      else
+        git diff --check HEAD^ HEAD
+      fi
