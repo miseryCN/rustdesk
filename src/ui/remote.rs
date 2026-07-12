@@ -15,7 +15,7 @@ use sciter::{
 };
 
 use hbb_common::{
-    allow_err, fs::TransferJobMeta, log, message_proto::*, rendezvous_proto::ConnType,
+    allow_err, config, fs::TransferJobMeta, log, message_proto::*, rendezvous_proto::ConnType,
 };
 
 use crate::{
@@ -613,11 +613,18 @@ impl SciterSession {
             ConnType::DEFAULT_CONN
         };
 
-        session
-            .lc
-            .write()
-            .unwrap()
-            .initialize(id, conn_type, None, force_relay, None, None, None);
+        // Legacy Sciter builds do not expose runtime server-profile switching.
+        let profile_id = config::active_peer_profile();
+        session.lc.write().unwrap().initialize(
+            id,
+            conn_type,
+            None,
+            force_relay,
+            None,
+            None,
+            None,
+            profile_id,
+        );
 
         Self(session)
     }

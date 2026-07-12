@@ -170,6 +170,40 @@ class Peer {
 enum UpdateEvent { online, load }
 
 typedef GetInitPeers = RxList<Peer> Function();
+typedef RecentPeersSnapshotLoader = Future<String> Function(String profileId);
+
+class RecentPeersLoadException implements Exception {
+  const RecentPeersLoadException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class RecentPeersRefreshReceipt {
+  const RecentPeersRefreshReceipt({
+    required this.profileId,
+    required this.epoch,
+    required this.applied,
+  });
+
+  final String profileId;
+  final int epoch;
+  final bool applied;
+}
+
+void reportRecentPeersLoadFailure() {
+  try {
+    FlutterError.reportError(FlutterErrorDetails(
+      exception: const RecentPeersLoadException(
+          'Recent connections could not be refreshed.'),
+      library: 'RustDesk recent connections',
+    ));
+  } catch (_) {
+    debugPrint('Recent connections could not be refreshed.');
+  }
+}
 
 class Peers extends ChangeNotifier {
   final String name;
@@ -181,26 +215,32 @@ class Peers extends ChangeNotifier {
   // And then load all peers later.
   List<String> restPeerIds = List.empty(growable: true);
   final GetInitPeers? getInitPeers;
+  final bool listenForLoadEvents;
   UpdateEvent event = UpdateEvent.load;
   static const _cbQueryOnlines = 'callback_query_onlines';
 
   Peers(
       {required this.name,
       required this.getInitPeers,
-      required this.loadEvent}) {
+      required this.loadEvent,
+      this.listenForLoadEvents = true}) {
     peers = getInitPeers?.call() ?? [];
     platformFFI.registerEventHandler(_cbQueryOnlines, name, (evt) async {
       _updateOnlineState(evt);
     });
-    platformFFI.registerEventHandler(loadEvent, name, (evt) async {
-      _updatePeers(evt);
-    });
+    if (listenForLoadEvents) {
+      platformFFI.registerEventHandler(loadEvent, name, (evt) async {
+        _updatePeers(evt);
+      });
+    }
   }
 
   @override
   void dispose() {
     platformFFI.unregisterEventHandler(_cbQueryOnlines, name);
-    platformFFI.unregisterEventHandler(loadEvent, name);
+    if (listenForLoadEvents) {
+      platformFFI.unregisterEventHandler(loadEvent, name);
+    }
     super.dispose();
   }
 
@@ -287,4 +327,221 @@ class Peers extends ChangeNotifier {
     }
     return [];
   }
+}
+
+class RecentPeersModel extends Peers {
+  RecentPeersModel({required RecentPeersSnapshotLoader loader})
+      : _loader = loader,
+        super(
+          name: 'recent',
+          loadEvent: 'load_recent_peers',
+          getInitPeers: null,
+          listenForLoadEvents: false,
+        );
+
+  final RecentPeersSnapshotLoader _loader;
+  int _epoch = 0;
+  String? _profileId;
+  final Map<String, Future<RecentPeersRefreshReceipt>> _inFlight = {};
+  bool _disposed = false;
+
+  @visibleForTesting
+  int get debugInFlightCount => _inFlight.length;
+
+  Future<RecentPeersRefreshReceipt> invalidateAndRefresh(String profileId) {
+    if (_disposed) return Future.value(_receipt(profileId, _epoch, false));
+    _profileId = profileId;
+    _epoch += 1;
+    peers = [];
+    restPeerIds = [];
+    event = UpdateEvent.load;
+    notifyListeners();
+    return _startLoad(profileId, _epoch, preserveOnline: false);
+  }
+
+  Future<RecentPeersRefreshReceipt> refresh(String profileId) {
+    if (_disposed) return Future.value(_receipt(profileId, _epoch, false));
+    final sameIdentity = _profileId == profileId;
+    if (!sameIdentity) {
+      return invalidateAndRefresh(profileId);
+    }
+    return _startLoad(profileId, _epoch, preserveOnline: true);
+  }
+
+  Future<RecentPeersRefreshReceipt> refreshSafely(String profileId) async {
+    final pending = refresh(profileId);
+    final requestEpoch = _epoch;
+    try {
+      return await pending;
+    } catch (_) {
+      if (!_disposed) reportRecentPeersLoadFailure();
+      return _receipt(profileId, requestEpoch, false);
+    }
+  }
+
+  bool isCurrentReceipt(RecentPeersRefreshReceipt receipt) =>
+      receipt.applied &&
+      !_disposed &&
+      _profileId == receipt.profileId &&
+      _epoch == receipt.epoch;
+
+  RecentPeersRefreshReceipt _receipt(
+          String profileId, int epoch, bool applied) =>
+      RecentPeersRefreshReceipt(
+        profileId: profileId,
+        epoch: epoch,
+        applied: applied,
+      );
+
+  Future<RecentPeersRefreshReceipt> _startLoad(String profileId, int epoch,
+      {required bool preserveOnline}) {
+    final key = '$epoch\u0000$profileId';
+    final pending = _inFlight[key];
+    if (pending != null) return pending;
+
+    late final Future<RecentPeersRefreshReceipt> tracked;
+    tracked = _load(profileId, epoch, preserveOnline).whenComplete(() {
+      if (identical(_inFlight[key], tracked)) {
+        _inFlight.remove(key);
+      }
+    });
+    _inFlight[key] = tracked;
+    return tracked;
+  }
+
+  Future<RecentPeersRefreshReceipt> _load(
+      String profileId, int epoch, bool preserveOnline) async {
+    late final String response;
+    try {
+      response = await _loader(profileId);
+    } catch (_) {
+      if (_disposed) return _receipt(profileId, epoch, false);
+      rethrow;
+    }
+    if (_disposed || _profileId != profileId || _epoch != epoch) {
+      return _receipt(profileId, epoch, false);
+    }
+    final snapshot = _parseRecentPeersSnapshot(response, profileId);
+    if (_disposed || _profileId != profileId || _epoch != epoch) {
+      return _receipt(profileId, epoch, false);
+    }
+
+    if (preserveOnline) {
+      final onlineStates = {for (final peer in peers) peer.id: peer.online};
+      for (final peer in snapshot.peers) {
+        peer.online = onlineStates[peer.id] ?? false;
+      }
+    }
+    peers = snapshot.peers;
+    restPeerIds = snapshot.restPeerIds;
+    event = UpdateEvent.load;
+    notifyListeners();
+    return _receipt(profileId, epoch, true);
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _epoch += 1;
+    _inFlight.clear();
+    super.dispose();
+  }
+}
+
+class _RecentPeersSnapshot {
+  const _RecentPeersSnapshot(this.peers, this.restPeerIds);
+
+  final List<Peer> peers;
+  final List<String> restPeerIds;
+}
+
+_RecentPeersSnapshot _parseRecentPeersSnapshot(
+    String response, String expectedProfileId) {
+  try {
+    final decoded = jsonDecode(response);
+    if (decoded is! Map<String, dynamic> ||
+        decoded['ok'] is! bool ||
+        decoded['profile_id'] is! String ||
+        decoded['peers'] is! List ||
+        decoded['ids'] is! List ||
+        decoded['error'] is! String) {
+      throw const RecentPeersLoadException(
+          'Invalid recent connections response.');
+    }
+    if (decoded['profile_id'] != expectedProfileId) {
+      throw const RecentPeersLoadException(
+          'Recent connections response did not match the server profile.');
+    }
+    if (decoded['ok'] != true) {
+      final error = decoded['error'] as String;
+      if (error.trim().isEmpty) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      throw RecentPeersLoadException(error);
+    }
+    if ((decoded['error'] as String).isNotEmpty) {
+      throw const RecentPeersLoadException(
+          'Invalid recent connections response.');
+    }
+
+    final peers = <Peer>[];
+    final peerIds = <String>{};
+    for (final rawPeer in decoded['peers'] as List) {
+      if (rawPeer is! Map<String, dynamic> || !_isValidPeerJson(rawPeer)) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      final id = rawPeer['id'] as String;
+      if (!peerIds.add(id)) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      peers.add(Peer.fromJson(rawPeer));
+    }
+    final ids = <String>[];
+    final restIds = <String>{};
+    for (final id in decoded['ids'] as List) {
+      if (id is! String || id.isEmpty || !restIds.add(id)) {
+        throw const RecentPeersLoadException(
+            'Invalid recent connections response.');
+      }
+      ids.add(id);
+    }
+    return _RecentPeersSnapshot(peers, ids);
+  } on RecentPeersLoadException {
+    rethrow;
+  } catch (_) {
+    throw const RecentPeersLoadException(
+        'Invalid recent connections response.');
+  }
+}
+
+bool _isValidPeerJson(Map<String, dynamic> peer) {
+  final id = peer['id'];
+  if (id is! String || id.isEmpty) return false;
+
+  const stringFields = [
+    'hash',
+    'password',
+    'username',
+    'hostname',
+    'platform',
+    'alias',
+    'rdpPort',
+    'rdpUsername',
+    'loginName',
+    'device_group_name',
+  ];
+  for (final field in stringFields) {
+    final value = peer[field];
+    if (value != null && value is! String) return false;
+  }
+  final tags = peer['tags'];
+  if (tags != null && tags is! List) return false;
+  final forceAlwaysRelay = peer['forceAlwaysRelay'];
+  if (forceAlwaysRelay != null && forceAlwaysRelay is! String) return false;
+  final sameServer = peer['same_server'];
+  if (sameServer != null && sameServer is! bool) return false;
+  return true;
 }

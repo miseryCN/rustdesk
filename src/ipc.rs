@@ -664,6 +664,7 @@ pub struct CheckIfRestart {
     disable_udp: String,
     allow_insecure_tls_fallback: String,
     api_server: String,
+    key: String,
 }
 
 impl CheckIfRestart {
@@ -679,6 +680,7 @@ impl CheckIfRestart {
                 config::keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK,
             ),
             api_server: Config::get_option("api-server"),
+            key: Config::get_option("key"),
         }
     }
 }
@@ -689,18 +691,21 @@ impl Drop for CheckIfRestart {
         // and restarting mediator is safe even https proxy is not used.
         let allow_insecure_tls_fallback_changed = self.allow_insecure_tls_fallback
             != Config::get_option(config::keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK);
-        if allow_insecure_tls_fallback_changed
+        let restart_needed = allow_insecure_tls_fallback_changed
             || self.stop_service != Config::get_option("stop-service")
-            || self.rendezvous_servers != Config::get_rendezvous_servers()
+            || profile_network_options_changed(
+                &self.rendezvous_servers,
+                &self.key,
+                &Config::get_rendezvous_servers(),
+                &Config::get_option("key"),
+            )
             || self.ws != Config::get_option(OPTION_ALLOW_WEBSOCKET)
             || self.disable_udp != Config::get_option(config::keys::OPTION_DISABLE_UDP)
-            || self.api_server != Config::get_option("api-server")
-        {
-            if allow_insecure_tls_fallback_changed {
-                hbb_common::tls::reset_tls_cache();
-            }
-            RendezvousMediator::restart();
+            || self.api_server != Config::get_option("api-server");
+        if allow_insecure_tls_fallback_changed {
+            hbb_common::tls::reset_tls_cache();
         }
+        run_restart_once_if_needed(restart_needed, RendezvousMediator::restart);
         if self.audio_input != Config::get_option("audio-input") {
             crate::audio_service::restart();
         }
@@ -1719,13 +1724,71 @@ pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>) {
 }
 
 async fn get_options_(ms_timeout: u64) -> ResultType<HashMap<String, String>> {
-    let mut c = connect(ms_timeout, "").await?;
+    let mut c = match connect(ms_timeout, "").await {
+        Ok(connection) => connection,
+        Err(_) => {
+            return options_after_connect_failure(
+                local_options_are_authoritative(),
+                Config::get_options(),
+            )
+        }
+    };
     c.send(&Data::Options(None)).await?;
-    if let Some(Data::Options(Some(value))) = c.next_timeout(ms_timeout).await? {
-        Config::set_options(value.clone());
-        Ok(value)
+    let value = ensure_options_response(c.next_timeout(ms_timeout).await?)?;
+    Config::set_options(value.clone());
+    Ok(value)
+}
+
+fn allow_local_options_fallback(installed: bool, server_process: bool) -> bool {
+    !installed || server_process
+}
+
+fn local_options_are_authoritative() -> bool {
+    allow_local_options_fallback(crate::platform::is_installed(), is_server())
+}
+
+fn options_after_connect_failure(
+    allow_local: bool,
+    local: HashMap<String, String>,
+) -> ResultType<HashMap<String, String>> {
+    if allow_local {
+        Ok(local)
     } else {
-        Ok(Config::get_options())
+        bail!("failed to connect to authoritative options service")
+    }
+}
+
+fn apply_options_after_connect_failure(
+    value: HashMap<String, String>,
+    allow_local: bool,
+    apply: impl FnOnce(HashMap<String, String>),
+) -> ResultType<()> {
+    if !allow_local {
+        bail!("failed to connect to authoritative options service");
+    }
+    apply(value);
+    Ok(())
+}
+
+fn profile_network_options_changed(
+    old_servers: &[String],
+    old_key: &str,
+    new_servers: &[String],
+    new_key: &str,
+) -> bool {
+    old_servers != new_servers || old_key != new_key
+}
+
+fn run_restart_once_if_needed(needed: bool, restart: impl FnOnce()) {
+    if needed {
+        restart();
+    }
+}
+
+fn ensure_options_response(data: Option<Data>) -> ResultType<HashMap<String, String>> {
+    match data {
+        Some(Data::Options(Some(value))) => Ok(value),
+        _ => bail!("server did not provide canonical options"),
     }
 }
 
@@ -1736,6 +1799,11 @@ pub async fn get_options_async() -> HashMap<String, String> {
 #[tokio::main(flavor = "current_thread")]
 pub async fn get_options() -> HashMap<String, String> {
     get_options_async().await
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn get_options_confirmed() -> ResultType<HashMap<String, String>> {
+    get_options_(1000).await
 }
 
 pub async fn get_option_async(key: &str) -> String {
@@ -1765,6 +1833,35 @@ pub async fn set_options(value: HashMap<String, String>) -> ResultType<()> {
         c.next_timeout(1000).await.ok();
     }
     Config::set_options(value);
+    Ok(())
+}
+
+fn ensure_options_ack(data: Option<Data>) -> ResultType<()> {
+    if matches!(data, Some(Data::Options(None))) {
+        Ok(())
+    } else {
+        bail!("server did not confirm options update")
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+pub async fn set_options_confirmed(value: HashMap<String, String>) -> ResultType<()> {
+    let _nat = CheckTestNatType::new();
+    match connect(1000, "").await {
+        Ok(mut connection) => {
+            connection.send(&Data::Options(Some(value.clone()))).await?;
+            ensure_options_ack(connection.next_timeout(1000).await?)?;
+            Config::set_options(value);
+        }
+        Err(_) => {
+            let _restart = CheckIfRestart::new();
+            apply_options_after_connect_failure(
+                value,
+                local_options_are_authoritative(),
+                Config::set_options,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -2120,6 +2217,71 @@ mod test {
     fn verify_ffi_enum_data_size() {
         println!("{}", std::mem::size_of::<Data>());
         assert!(std::mem::size_of::<Data>() <= 120);
+    }
+
+    #[test]
+    fn confirmed_options_requires_explicit_ack() {
+        assert!(ensure_options_ack(Some(Data::Options(None))).is_ok());
+        assert!(ensure_options_ack(None).is_err());
+        assert!(ensure_options_ack(Some(Data::NatType(None))).is_err());
+    }
+
+    #[test]
+    fn confirmed_options_read_requires_explicit_response() {
+        let mut expected = HashMap::new();
+        expected.insert("key".to_owned(), "value".to_owned());
+        assert_eq!(
+            ensure_options_response(Some(Data::Options(Some(expected.clone()))))
+                .expect("explicit options response should succeed"),
+            expected
+        );
+        assert!(ensure_options_response(None).is_err());
+        assert!(ensure_options_response(Some(Data::NatType(None))).is_err());
+    }
+
+    #[test]
+    fn portable_connect_failure_uses_local_options() {
+        let mut local = HashMap::new();
+        local.insert("portable".to_owned(), "yes".to_owned());
+        assert!(allow_local_options_fallback(false, false));
+        assert_eq!(
+            options_after_connect_failure(true, local.clone())
+                .expect("portable mode should use local options"),
+            local
+        );
+    }
+
+    #[test]
+    fn expected_service_connect_failure_is_error_and_does_not_apply_options() {
+        let applied = std::sync::Arc::new(std::sync::Mutex::new(false));
+        let observed = applied.clone();
+        let result = apply_options_after_connect_failure(
+            HashMap::from([("key".to_owned(), "secret".to_owned())]),
+            allow_local_options_fallback(true, false),
+            move |_| *observed.lock().expect("applied lock") = true,
+        );
+        assert!(result.is_err());
+        assert!(!*applied.lock().expect("applied lock"));
+    }
+
+    #[test]
+    fn profile_restart_predicate_detects_key_only_change() {
+        let servers = vec!["server.example.com".to_owned()];
+        assert!(profile_network_options_changed(
+            &servers, "old-key", &servers, "new-key"
+        ));
+        assert!(!profile_network_options_changed(
+            &servers, "same-key", &servers, "same-key"
+        ));
+    }
+
+    #[test]
+    fn batch_profile_change_runs_restart_hook_once() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        run_restart_once_if_needed(true, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

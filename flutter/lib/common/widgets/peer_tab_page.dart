@@ -398,7 +398,7 @@ class _PeerTabPageState extends State<PeerTabPage>
                 for (var p in peers) {
                   await bind.mainRemovePeer(id: p.id);
                 }
-                bind.mainLoadRecentPeers();
+                gFFI.refreshRecentPeersSafely();
                 break;
               case 1:
                 final favs = (await bind.mainGetFav()).toList();

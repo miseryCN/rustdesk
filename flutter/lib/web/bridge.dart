@@ -1036,6 +1036,17 @@ class RustdeskImpl {
         () => js.context.callMethod('getByName', ['load_recent_peers']));
   }
 
+  Future<String> mainLoadRecentPeersSnapshot(
+      {required String profileId, dynamic hint}) async {
+    return jsonEncode({
+      'ok': false,
+      'profile_id': profileId,
+      'peers': [],
+      'ids': [],
+      'error': 'Server profile snapshots are unavailable on the web.',
+    });
+  }
+
   String mainLoadRecentPeersSync({dynamic hint}) {
     return js.context.callMethod('getByName', ['load_recent_peers_sync']);
   }
