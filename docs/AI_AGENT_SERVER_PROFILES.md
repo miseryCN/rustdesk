@@ -78,20 +78,49 @@ flutter_rust_bridge_codegen \
 安装以下组件：
 
 1. Visual Studio 2022 Build Tools，勾选 **Desktop development with C++**、MSVC v143、Windows 10/11 SDK。
-2. Git、Python 3、Flutter `3.24.5`。
-3. Rust 的 `x86_64-pc-windows-msvc` 工具链。
+2. Git、Python 3、Flutter `3.24.5` x64、LLVM `15.0.6`。
+3. Rust 的 `1.75.0-x86_64-pc-windows-msvc` 工具链。
+
+以下流程镜像本项目的 Windows x64 CI。使用全新的 RustDesk 工作副本和 Flutter SDK；不要在已有正式安装版的目录中构建。
 
 PowerShell：
 
 ```powershell
-cd C:\src\rustdesk
+$repo = 'C:\src\rustdesk'
+$flutterRoot = 'C:\src\flutter-3.24.5'
+$env:Path = "$flutterRoot\bin;C:\Program Files\LLVM\bin;$env:Path"
+$env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
+
+cd $repo
 
 rustup toolchain install 1.75.0-x86_64-pc-windows-msvc
 rustup override set 1.75.0
 
 flutter config --enable-windows-desktop
 flutter doctor
+flutter --version # 必须显示 Flutter 3.24.5
+rustc --version   # 必须显示 1.75.x
 ```
+
+Flutter 3.24.5 的 Windows x64 构建依赖项目的自定义引擎，并需要给 **Flutter SDK** 应用官方 CI 同款补丁。它们不修改 RustDesk 源码：
+
+```powershell
+cd $flutterRoot
+git apply "$repo\.github\patches\flutter_3.24.4_dropdown_menu_enableFilter.diff"
+flutter precache --windows
+
+$engineArchive = "$env:TEMP\windows-x64-release.zip"
+$engineExtract = "$env:TEMP\windows-x64-release"
+$engineDir = "$flutterRoot\bin\cache\artifacts\engine\windows-x64-release"
+Invoke-WebRequest `
+  -Uri 'https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip' `
+  -OutFile $engineArchive
+Remove-Item $engineExtract -Recurse -Force -ErrorAction SilentlyContinue
+Expand-Archive -Path $engineArchive -DestinationPath $engineExtract -Force
+Copy-Item "$engineExtract\windows-x64-release\*" $engineDir -Recurse -Force
+```
+
+若 Flutter SDK 已应用过补丁，请重新解压一份 Flutter 3.24.5 SDK 后再执行上述命令；不要反复应用补丁。
 
 安装 vcpkg 与依赖：
 
@@ -102,20 +131,35 @@ git checkout 120deac3062162151622ca4860575a33844ba10b
 .\bootstrap-vcpkg.bat -disableMetrics
 
 $env:VCPKG_ROOT = 'C:\src\vcpkg'
-[Environment]::SetEnvironmentVariable('VCPKG_ROOT', $env:VCPKG_ROOT, 'User')
+$env:VCPKG_DEFAULT_HOST_TRIPLET = 'x64-windows-static'
 
-cd C:\src\rustdesk
+cd $repo
 & "$env:VCPKG_ROOT\vcpkg.exe" install `
   --triplet x64-windows-static `
   --x-install-root="$env:VCPKG_ROOT\installed"
 ```
 
+不要只安装或手工复制单个 FFmpeg、mfx、AOM 库。manifest 安装必须成功；失败时保留 vcpkg 日志并停止。
+
 构建未打包的 Release 目录：
 
 ```powershell
-cd C:\src\rustdesk
+cd $repo\flutter
 flutter pub get
+cd $repo
+
+# Flutter 3.24.5 可能仅重写 flutter/pubspec.lock；这是本机构建产物，绝不能提交。
+$changedFiles = @(git diff --name-only)
+if ($changedFiles | Where-Object { $_ -ne 'flutter/pubspec.lock' }) {
+  throw 'flutter pub get 修改了 flutter/pubspec.lock 之外的文件，已停止构建。'
+}
+
+cargo clean
 py -3 build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+
+# 构建完成后恢复本机构建期间生成的锁文件，并确认仓库干净。
+git restore flutter/pubspec.lock
+git status --short
 ```
 
 运行或复制整个输出目录：
@@ -125,6 +169,8 @@ flutter\build\windows\x64\runner\Release\
 ```
 
 其中的 `rustdesk.exe` 是主程序。不要只复制 exe；同目录 DLL、`data` 与资源也必须一起带走。
+
+构建完成前检查 `data\flutter_assets\fonts\MaterialIcons-Regular.otf` 是否存在；缺失时不要只复制 exe，应保留整个 Release 目录。
 
 ## Linux x64 构建（Ubuntu/Debian）
 
