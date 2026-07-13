@@ -1,12 +1,14 @@
 stages:
   - sync
   - verify
+  - mirror
 
 workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == "master"'
 
 default:
@@ -46,3 +48,16 @@ verify-source:
       else
         git diff --check HEAD^ HEAD
       fi
+
+mirror-github:
+  stage: mirror
+  tags:
+    - gitlab--duo
+  variables:
+    GIT_STRATEGY: fetch
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH == "master"'
+  script:
+    - bash .gitlab/ci/mirror-github.sh
