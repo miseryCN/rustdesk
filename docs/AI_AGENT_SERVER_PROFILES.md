@@ -1,6 +1,19 @@
 # RustDesk 多服务器档案：AI 执行与三端构建手册
 
-本文档用于把本分支交给另一个 AI 或开发者继续执行、验证和维护。不要在命令、日志、提交信息或文档中记录 GitHub Token、服务器 Key、密码或真实服务器地址。
+本文档是本分支唯一的 AI 交接、验证与三端构建手册。不要在命令、日志、提交信息或文档中记录 GitHub Token、服务器 Key、密码或真实服务器地址。
+
+## AI 执行铁律
+
+每次构建、排障或修改前，AI 必须遵守以下边界：
+
+1. 从干净工作树开始，先执行 `git status --short` 和 `git submodule status`。子模块不一致时先按本文档初始化，不能绕过。
+2. 不得修改或提交 RustDesk 源码、`Cargo.lock`、`pubspec.yaml`、`vcpkg.json`、`res/vcpkg/**`、AOM/FFmpeg 配置或生成的 C FFI bindings 来迁就本机环境。
+3. 不得使用 `--classic` 绕过 manifest vcpkg 安装，不得手工复制不同 triplet 的 `.lib`、`.dll`、`.pc` 文件。
+4. `flutter pub get` 只能在 `flutter/` 目录执行。它若仅临时修改 `flutter/pubspec.lock`，可用于本次构建；构建结束或失败后必须恢复，绝不提交。出现其他差异立即停止。
+5. 必须使用项目根目录的 `build.py`，不能以单独的 `flutter build` 代替完整构建。
+6. 失败时保留完整错误、工具版本、vcpkg 日志和 `git status --short`，然后停止；禁止自行升级 Flutter/Dart、修改依赖或制造“能编过”的临时补丁。
+
+构建产物只有在构建命令退出码为 `0` 且通过本文档的产物检查后才可交付；文件时间戳、部分 DLL 或 Rust 编译成功均不能代替该标准。
 
 ## 仓库与分支
 
@@ -168,9 +181,25 @@ git status --short
 flutter\build\windows\x64\runner\Release\
 ```
 
-其中的 `rustdesk.exe` 是主程序。不要只复制 exe；同目录 DLL、`data` 与资源也必须一起带走。
+其中的 `rustdesk.exe` 是主程序。不要只复制 exe；同目录 DLL、`data` 与资源也必须一起带走。Windows 服务不需要单独构建：应用安装后会使用同一个 `rustdesk.exe --service` 注册服务。
 
-构建完成前检查 `data\flutter_assets\fonts\MaterialIcons-Regular.otf` 是否存在；缺失时不要只复制 exe，应保留整个 Release 目录。
+构建完成前检查下列文件是否同时存在：
+
+```text
+rustdesk.exe
+librustdesk.dll
+flutter_windows.dll
+data\flutter_assets\fonts\MaterialIcons-Regular.otf
+```
+
+缺失图标字体时不要只复制 exe，应保留整个 Release 目录。
+
+### Windows 异常处理
+
+- vcpkg manifest 安装失败：保存 `$env:VCPKG_ROOT\buildtrees` 下的日志并停止。不要改 portfile、`vcpkg.json` 或复制库文件。
+- 首次构建时间长：记录 stdout/stderr 并轮询进程。固定超时不是失败证据。
+- 若 `cmd -> dart -> cmake -> MSBuild` 连续数分钟无新日志，且累计 CPU 时间不增长，说明卡在 Flutter `tool_backend.bat` / `flutter_assemble`；停止进程、恢复 `flutter/pubspec.lock`、保留日志并报告。不要修改项目依赖掩盖问题。
+- 仅当 `git diff --name-only` 显示 `flutter/pubspec.lock` 时，才允许执行 `git restore flutter/pubspec.lock`；其他差异必须先人工审查。
 
 ## Linux x64 构建（Ubuntu/Debian）
 
@@ -211,8 +240,11 @@ cd -
 构建：
 
 ```sh
+cd flutter
 flutter pub get
+cd ..
 python3 build.py --flutter --hwcodec --unix-file-copy-paste
+git restore flutter/pubspec.lock
 ```
 
 未打包的 Release bundle 位于：
@@ -229,11 +261,15 @@ flutter/build/linux/x64/release/bundle/
 
 ## macOS 构建
 
-先安装 Xcode（含 Command Line Tools）、Git、Python 3、Flutter `3.24.5` 和 Homebrew。然后安装工具：
+先安装 Xcode（含 Command Line Tools）、Git、Python 3、Flutter `3.24.5` 和 Homebrew。macOS CI 使用 LLVM、特定 NASM 2.16 和 Flutter SDK 补丁：
 
 ```sh
 xcode-select --install
-brew install cmake ninja nasm yasm pkg-config autoconf automake libtool
+brew install llvm create-dmg cmake ninja yasm pkg-config autoconf automake libtool
+curl -LO https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+unzip nasm-2.16.03-macosx.zip
+sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+nasm --version
 ```
 
 Apple Silicon 使用 `arm64-osx`；Intel 使用 `x64-osx`。以下以 Apple Silicon 为例：
@@ -245,6 +281,12 @@ rustup override set 1.81.0
 
 flutter config --enable-macos-desktop
 flutter doctor
+
+# 在 Flutter SDK（不是 RustDesk 仓库）中应用 CI 同款补丁与 workaround。
+flutter_root="$(cd "$(dirname "$(which flutter)")/.." && pwd)"
+git -C "$flutter_root" apply "$PWD/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+perl -0pi -e 's/_setFramesEnabledState\(false\);/\/\/_setFramesEnabledState(false);/g' \
+  "$flutter_root/packages/flutter/lib/src/scheduler/binding.dart"
 
 git clone https://github.com/microsoft/vcpkg "$HOME/vcpkg"
 cd "$HOME/vcpkg"
@@ -261,8 +303,11 @@ cd -
 构建：
 
 ```sh
+cd flutter
 flutter pub get
-python3 build.py --flutter --hwcodec
+cd ..
+python3 build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
+git restore flutter/pubspec.lock
 ```
 
 构建产物通常位于：
@@ -271,7 +316,7 @@ python3 build.py --flutter --hwcodec
 flutter/build/macos/Build/Products/Release/RustDesk.app
 ```
 
-Intel Mac 只需将 vcpkg triplet 改成 `x64-osx`。首次在本机运行未签名应用时，macOS 可能需要在“隐私与安全性”中手动允许。
+Intel Mac 将 vcpkg triplet 改成 `x64-osx`，并移除 `--screencapturekit`。首次在本机运行未签名应用时，macOS 可能需要在“隐私与安全性”中手动允许。只在一次性 Flutter SDK 中应用上述补丁；重复构建请复用已补丁的 SDK 或重新解压 SDK，不能重复应用。
 
 ## 验证命令
 
