@@ -9,6 +9,7 @@ import '../../models/server_profile_model.dart';
 typedef DeleteServerProfileConfirm = void Function(
   Future<void> Function() action,
   String title,
+  String message,
 );
 
 typedef TestServerProfileServer = Future<String> Function(String server);
@@ -97,14 +98,19 @@ class _ServerProfileDialogState extends State<ServerProfileDialog> {
     confirm(
       () => _runOperation(() => widget.model.remove(profile.id)),
       _tr('Delete'),
+      _tr(
+        'This permanently deletes this profile’s recent devices, saved '
+        'passwords, aliases, and connection options.',
+      ),
     );
   }
 
   void _defaultConfirmDelete(
     Future<void> Function() action,
     String title,
+    String message,
   ) {
-    deleteConfirmDialog(action, title);
+    deleteConfirmDialog(action, title, content: Text(message));
   }
 
   Future<String> _testServer(String server) async {
@@ -320,7 +326,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
     super.dispose();
   }
 
-  bool _validate(String name, String idServer) {
+  bool _validate(String name) {
     final duplicate = widget.profiles.any(
       (profile) =>
           profile.id != widget.profile?.id &&
@@ -333,11 +339,9 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
               ? '${widget.translator('Name')}: '
                   '${widget.translator('Already exists')}'
               : null;
-      _idServerError = idServer.isEmpty
-          ? '${widget.translator('ID Server')}: ${widget.translator('Empty')}'
-          : null;
+      _idServerError = null;
     });
-    return _nameError == null && _idServerError == null;
+    return _nameError == null;
   }
 
   Future<void> _save() async {
@@ -345,20 +349,13 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
     final name = _nameController.text.trim();
     final idServer = _idServerController.text.trim();
     final key = _keyController.text.trim();
-    if (!_validate(name, idServer)) return;
+    if (!_validate(name)) return;
     await widget.onSave(name, idServer, key);
   }
 
   Future<void> _test() async {
     if (widget.busy || _testing) return;
     final server = _idServerController.text.trim();
-    if (server.isEmpty) {
-      setState(() {
-        _idServerError =
-            '${widget.translator('ID Server')}: ${widget.translator('Empty')}';
-      });
-      return;
-    }
     final request = ++_testRequest;
     setState(() {
       _testing = true;
@@ -392,6 +389,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
   @override
   Widget build(BuildContext context) {
     final disabled = widget.busy || _testing;
+    final publicServerProfile = _idServerController.text.trim().isEmpty;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -429,7 +427,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
             IconButton(
               key: const Key('test-profile-server'),
               tooltip: widget.translator('Test'),
-              onPressed: disabled ? null : _test,
+              onPressed: disabled || publicServerProfile ? null : _test,
               icon: _testing
                   ? const SizedBox.square(
                       dimension: 18,

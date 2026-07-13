@@ -226,15 +226,24 @@ void main() {
       activeProfileId: 'active',
     );
     Future<void> Function()? confirmedAction;
+    String? confirmationMessage;
     await pumpDialog(
       tester,
       model,
-      confirmDelete: (action, _) => confirmedAction = action,
+      confirmDelete: (action, _, message) {
+        confirmedAction = action;
+        confirmationMessage = message;
+      },
     );
 
     await tester.tap(find.byKey(const Key('delete-other')));
     expect(model.removeCalls, isEmpty);
     expect(confirmedAction, isNotNull);
+    expect(
+      confirmationMessage,
+      'translated:This permanently deletes this profile’s recent devices, '
+      'saved passwords, aliases, and connection options.',
+    );
     await confirmedAction!();
     await tester.pump();
     expect(model.removeCalls, ['other']);
@@ -267,7 +276,31 @@ void main() {
     await tester.tap(find.byKey(const Key('save-profile')));
     await tester.pump();
     expect(find.text('translated:Name: translated:Empty'), findsOneWidget);
-    expect(find.text('translated:ID Server: translated:Empty'), findsOneWidget);
+    expect(find.text('translated:ID Server: translated:Empty'), findsNothing);
+  });
+
+  testWidgets('add accepts a public server profile and disables connectivity test',
+      (tester) async {
+    final model = FakeServerProfileModel(
+      profiles: profiles,
+      activeProfileId: 'active',
+    );
+    await pumpDialog(tester, model);
+    await tester.tap(find.byKey(const Key('add-profile')));
+    await tester.pump();
+    await tester.enterText(find.byKey(const Key('profile-name')), ' Public ');
+
+    expect(
+      tester
+          .widget<IconButton>(find.byKey(const Key('test-profile-server')))
+          .onPressed,
+      isNull,
+    );
+
+    await tester.tap(find.byKey(const Key('save-profile')));
+    await tester.pump();
+
+    expect(model.addCalls, [('Public', '', '')]);
   });
 
   testWidgets('add trims all values passed to the model', (tester) async {

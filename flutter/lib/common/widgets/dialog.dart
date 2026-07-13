@@ -1927,7 +1927,11 @@ trackpadSpeedDialog(SessionID sessionId, FFI ffi) async {
       [btnClose]);
 }
 
-void deleteConfirmDialog(Function onSubmit, String title) async {
+void deleteConfirmDialog(
+  Function onSubmit,
+  String title, {
+  Widget? content,
+}) async {
   gFFI.dialogManager.show(
     (setState, close, context) {
       submit() async {
@@ -1950,7 +1954,7 @@ void deleteConfirmDialog(Function onSubmit, String title) async {
             ),
           ],
         ),
-        content: SizedBox.shrink(),
+        content: content ?? SizedBox.shrink(),
         actions: [
           dialogButton(
             "Cancel",
