@@ -20,7 +20,9 @@ import 'package:flutter_hbb/models/group_model.dart';
 import 'package:flutter_hbb/models/peer_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
+import 'package:flutter_hbb/models/recent_peers_refresh_coordinator.dart';
 import 'package:flutter_hbb/models/server_model.dart';
+import 'package:flutter_hbb/models/server_profile_model.dart';
 import 'package:flutter_hbb/models/user_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/models/desktop_render_texture.dart';
@@ -1338,7 +1340,7 @@ class FfiModel with ChangeNotifier {
     cachedPeerData.peerInfo.remove('resolutions');
 
     // Recent peer is updated by handle_peer_info(ui_session_interface.rs) --> handle_peer_info(client.rs) --> save_config(client.rs)
-    bind.mainLoadRecentPeers();
+    parent.target?.refreshRecentPeersSafely();
 
     parent.target?.dialogManager.dismissAll();
     _pi.version = evt['version'];
@@ -3663,6 +3665,32 @@ enum ConnType {
   terminal
 }
 
+class _RustdeskServerProfileApi implements ServerProfileApi {
+  @override
+  Future<String> getProfiles() => bind.mainGetServerProfiles();
+
+  @override
+  Future<String> addProfile(String name, String idServer, String key) =>
+      bind.mainAddServerProfile(name: name, idServer: idServer, key: key);
+
+  @override
+  Future<String> updateProfile(
+          String id, String name, String idServer, String key) =>
+      bind.mainUpdateServerProfile(
+          id: id, name: name, idServer: idServer, key: key);
+
+  @override
+  Future<String> removeProfile(String id) =>
+      bind.mainDeleteServerProfile(id: id);
+
+  @override
+  Future<String> switchProfile(String id) =>
+      bind.mainSwitchServerProfile(id: id);
+
+  @override
+  Future<String> recoverProfiles() => bind.mainRecoverServerProfiles();
+}
+
 /// Flutter state manager and data communication with the Rust core.
 class FFI {
   var id = '';
@@ -3691,9 +3719,10 @@ class FFI {
   late final ElevationModel elevationModel; // session
   late final CmFileModel cmFileModel; // cm
   late final TextureModel textureModel; //session
-  late final Peers recentPeersModel; // global
+  late final RecentPeersModel recentPeersModel; // global
   late final Peers favoritePeersModel; // global
   late final Peers lanPeersModel; // global
+  late final ServerProfileModel serverProfileModel; // global
 
   // Terminal model registry for multiple terminals
   final Map<int, TerminalModel> _terminalModels = {};
@@ -3720,16 +3749,66 @@ class FFI {
     elevationModel = ElevationModel(WeakReference(this));
     cmFileModel = CmFileModel(WeakReference(this));
     textureModel = TextureModel(WeakReference(this));
-    recentPeersModel = Peers(
-        name: PeersModelName.recent,
-        loadEvent: LoadEvent.recent,
-        getInitPeers: null);
+    final recentPeers = RecentPeersModel(
+      loader: (profileId) =>
+          bind.mainLoadRecentPeersSnapshot(profileId: profileId),
+    );
+    recentPeersModel = recentPeers;
     favoritePeersModel = Peers(
         name: PeersModelName.favorite,
         loadEvent: LoadEvent.favorite,
         getInitPeers: null);
     lanPeersModel = Peers(
         name: PeersModelName.lan, loadEvent: LoadEvent.lan, getInitPeers: null);
+    serverProfileModel = ServerProfileModel(
+      api: _RustdeskServerProfileApi(),
+      refreshRecentPeers: () => refreshRecentPeers(invalidate: true),
+    );
+  }
+
+  Future<void> refreshRecentPeers({bool invalidate = false}) async {
+    if (!isDesktop) {
+      await bind.mainLoadRecentPeers();
+      return;
+    }
+    if (serverProfileModel.activeProfileId == null) {
+      await serverProfileModel.initialize();
+    }
+    final profileId = serverProfileModel.activeProfileId;
+    if (profileId == null) {
+      throw const ServerProfileException(
+          'Server profiles have not been loaded.');
+    }
+    if (invalidate) {
+      await recentPeersModel.invalidateAndRefresh(profileId);
+    } else {
+      await recentPeersModel.refresh(profileId);
+    }
+  }
+
+  Future<void> refreshRecentPeersSafely() async {
+    try {
+      if (!isDesktop) {
+        await bind.mainLoadRecentPeers();
+        return;
+      }
+      if (serverProfileModel.activeProfileId == null) {
+        await serverProfileModel.initialize();
+      }
+      final profileId = serverProfileModel.activeProfileId;
+      if (profileId == null) {
+        reportRecentPeersLoadFailure();
+        return;
+      }
+      final receipt = await recentPeersModel.refreshSafely(profileId);
+      markRecentPeersFreshFromReceipt(
+        recentPeers: recentPeersModel,
+        serverProfiles: serverProfileModel,
+        receipt: receipt,
+      );
+    } catch (_) {
+      reportRecentPeersLoadFailure();
+    }
   }
 
   /// Mobile reuse FFI

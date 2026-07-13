@@ -21,6 +21,7 @@ use std::{
     ops::Deref,
     str::FromStr,
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
         Arc, Mutex, RwLock,
     },
@@ -1733,6 +1734,8 @@ struct ConnToken {
 #[derive(Default)]
 pub struct LoginConfigHandler {
     id: String,
+    profile_id: String,
+    config_writable: AtomicBool,
     pub conn_type: ConnType,
     pub is_terminal_admin: bool,
     hash: Hash,
@@ -1794,7 +1797,10 @@ impl LoginConfigHandler {
         adapter_luid: Option<i64>,
         shared_password: Option<String>,
         conn_token: Option<String>,
+        profile_id: String,
     ) {
+        self.profile_id = profile_id;
+        self.config_writable.store(true, Ordering::Relaxed);
         let mut id = id;
         if id.contains("@") {
             let mut v = id.split("@");
@@ -1922,7 +1928,30 @@ impl LoginConfigHandler {
     /// Load [`PeerConfig`].
     pub fn load_config(&self) -> PeerConfig {
         debug_assert!(self.id.len() > 0);
-        PeerConfig::load(&self.id)
+        match PeerConfig::try_load_for(&self.profile_id, &self.id) {
+            Ok(Some(config)) => {
+                self.config_writable.store(true, Ordering::Relaxed);
+                config
+            }
+            Ok(None) => {
+                self.config_writable.store(true, Ordering::Relaxed);
+                PeerConfig::default()
+            }
+            Err(err) => {
+                self.config_writable.store(false, Ordering::Relaxed);
+                log::error!(
+                    "Failed to load peer config for profile '{}' and peer '{}': {}",
+                    self.profile_id,
+                    self.id,
+                    err
+                );
+                self.config.clone()
+            }
+        }
+    }
+
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
     }
 
     /// Save a [`PeerConfig`] into the handler.
@@ -1931,8 +1960,26 @@ impl LoginConfigHandler {
     ///
     /// * `config` - [`PeerConfig`] to save.
     pub fn save_config(&mut self, config: PeerConfig) {
-        config.store(&self.id);
-        self.config = config;
+        if self.config_writable.load(Ordering::Relaxed) {
+            match config.store_for(&self.profile_id, &self.id) {
+                Ok(()) => self.config = config,
+                Err(err) => {
+                    log::error!(
+                        "Failed to store peer config for profile '{}' and peer '{}': {}",
+                        self.profile_id,
+                        self.id,
+                        err
+                    );
+                }
+            }
+        } else {
+            log::warn!(
+                "Skipping peer config store for profile '{}' and peer '{}' after a storage error",
+                self.profile_id,
+                self.id
+            );
+            self.config = config;
+        }
     }
 
     /// Set an option for handler's [`PeerConfig`].
@@ -2202,7 +2249,7 @@ impl LoginConfigHandler {
             } else {
                 self.config.options.insert(name, "Y".to_owned());
             }
-            self.config.store(&self.id);
+            self.save_config(self.config.clone());
             return None;
         }
 
@@ -4324,4 +4371,250 @@ async fn udp_nat_connect(
             anyhow!(err)
         })?;
     Ok((res.1, Some(res.0), typ))
+}
+
+#[cfg(test)]
+mod server_profile_session_tests {
+    use super::*;
+    use std::{fs, path::PathBuf};
+
+    static TEST_ENV: Mutex<()> = Mutex::new(());
+
+    struct TestConfigRoot {
+        path: PathBuf,
+        original: Option<std::ffi::OsString>,
+        active_profile: String,
+    }
+
+    impl TestConfigRoot {
+        fn enter() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rustdesk-session-profile-test-{}",
+                rand::random::<u64>()
+            ));
+            fs::create_dir_all(&path).expect("create isolated config root");
+            let original = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("XDG_CONFIG_HOME", &path);
+            Self {
+                path,
+                original,
+                active_profile: config::active_peer_profile(),
+            }
+        }
+    }
+
+    impl Drop for TestConfigRoot {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(original) => std::env::set_var("XDG_CONFIG_HOME", original),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            config::set_active_peer_profile(&self.active_profile)
+                .expect("restore active test profile");
+            fs::remove_dir_all(&self.path).expect("remove isolated config root");
+        }
+    }
+
+    fn initialize_handler(profile_id: &str) -> LoginConfigHandler {
+        initialize_handler_for_peer(
+            profile_id,
+            format!("profile-capture-test-{}", rand::random::<u64>()),
+        )
+    }
+
+    fn initialize_handler_for_peer(profile_id: &str, peer_id: String) -> LoginConfigHandler {
+        let mut handler = LoginConfigHandler::default();
+        handler.initialize(
+            peer_id,
+            ConnType::DEFAULT_CONN,
+            None,
+            false,
+            None,
+            None,
+            None,
+            profile_id.to_owned(),
+        );
+        handler
+    }
+
+    #[test]
+    fn handler_keeps_the_profile_captured_at_initialization() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let handler = initialize_handler("home");
+        config::set_active_peer_profile("office").expect("valid test profile");
+
+        assert_eq!(handler.profile_id(), "home");
+    }
+
+    #[test]
+    fn new_handler_can_capture_a_different_active_profile() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let old_handler = initialize_handler("home");
+        let new_handler = initialize_handler("office");
+
+        assert_eq!(old_handler.profile_id(), "home");
+        assert_eq!(new_handler.profile_id(), "office");
+    }
+
+    #[test]
+    fn old_handler_writes_only_to_its_captured_profile_after_switch() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("profile-write-test-{}", rand::random::<u64>());
+        let mut handler = initialize_handler_for_peer("home", peer_id.clone());
+        config::set_active_peer_profile("office").expect("valid test profile");
+
+        handler.set_option("alias".to_owned(), "home alias".to_owned());
+
+        assert_eq!(
+            PeerConfig::try_load_for("home", &peer_id)
+                .expect("home peer config should be readable")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("home alias".to_owned())
+        );
+        assert_eq!(
+            PeerConfig::try_load_for("office", &peer_id)
+                .expect("office peer config should be readable"),
+            None
+        );
+    }
+
+    #[test]
+    fn retired_session_can_write_without_polluting_the_current_namespace() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let store = hbb_common::config::ServerProfileStore::with_root(config::Config::path(""));
+        let mut profiles =
+            hbb_common::config::ServerProfilesConfig::default_with("new.example.com", "new-key");
+        profiles.profiles[0].peer_namespace_id = "new-space".to_owned();
+        profiles.profiles[0].retired_peer_namespace_ids = vec!["old-space".to_owned()];
+        store.save(&profiles).expect("profiles should save");
+        let peer_id = format!("retired-write-test-{}", rand::random::<u64>());
+        let mut old_session = initialize_handler_for_peer("old-space", peer_id.clone());
+
+        old_session.set_option("alias".to_owned(), "old alias".to_owned());
+
+        assert_eq!(
+            PeerConfig::try_load_for("old-space", &peer_id)
+                .expect("retired peer should load")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("old alias".to_owned())
+        );
+        assert_eq!(
+            PeerConfig::try_load_for("new-space", &peer_id).expect("current peer should load"),
+            None
+        );
+    }
+
+    #[test]
+    fn same_peer_id_keeps_credentials_isolated_across_identity_namespaces() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let store = hbb_common::config::ServerProfileStore::with_root(config::Config::path(""));
+        let mut profiles =
+            hbb_common::config::ServerProfilesConfig::default_with("new.example.com", "new-key");
+        profiles.profiles[0].peer_namespace_id = "new-space".to_owned();
+        profiles.profiles[0].retired_peer_namespace_ids = vec!["old-space".to_owned()];
+        store.save(&profiles).expect("profiles should save");
+        let peer_id = format!("credential-isolation-test-{}", rand::random::<u64>());
+        let mut old_peer = PeerConfig::default();
+        old_peer.password = b"old-password".to_vec();
+        old_peer
+            .store_for("old-space", &peer_id)
+            .expect("old credential should save");
+        let mut new_peer = PeerConfig::default();
+        new_peer.password = b"new-password".to_vec();
+        new_peer
+            .store_for("new-space", &peer_id)
+            .expect("new credential should save");
+
+        assert_eq!(
+            PeerConfig::try_load_for("old-space", &peer_id)
+                .expect("old credential should load")
+                .expect("old peer should exist")
+                .password,
+            b"old-password"
+        );
+        assert_eq!(
+            PeerConfig::try_load_for("new-space", &peer_id)
+                .expect("new credential should load")
+                .expect("new peer should exist")
+                .password,
+            b"new-password"
+        );
+    }
+
+    #[test]
+    fn corrupt_peer_config_is_not_overwritten_by_session_updates() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("corrupt-profile-test-{}", rand::random::<u64>());
+        let path = PeerConfig::path_for_root(config::Config::path(""), "home", &peer_id)
+            .expect("peer path should be valid");
+        fs::create_dir_all(path.parent().expect("peer path should have a parent"))
+            .expect("create peer directory");
+        let corrupt = b"password = [invalid toml";
+        fs::write(&path, corrupt).expect("write corrupt peer config");
+        let mut handler = initialize_handler_for_peer("home", peer_id);
+
+        handler.set_option("alias".to_owned(), "must not persist".to_owned());
+
+        assert_eq!(fs::read(path).expect("read corrupt peer config"), corrupt);
+    }
+
+    #[test]
+    fn successful_reload_reenables_writes_after_corrupt_config_is_repaired() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("repaired-profile-test-{}", rand::random::<u64>());
+        let path = PeerConfig::path_for_root(config::Config::path(""), "home", &peer_id)
+            .expect("peer path should be valid");
+        fs::create_dir_all(path.parent().expect("peer path should have a parent"))
+            .expect("create peer directory");
+        fs::write(&path, b"password = [invalid toml").expect("write corrupt peer config");
+        let mut handler = initialize_handler_for_peer("home", peer_id.clone());
+        let repaired =
+            hbb_common::toml::to_string_pretty(&PeerConfig::default()).expect("serialize peer");
+        fs::write(&path, repaired).expect("repair peer config");
+
+        handler.set_option("alias".to_owned(), "repaired".to_owned());
+
+        assert_eq!(
+            PeerConfig::try_load_for("home", &peer_id)
+                .expect("load repaired peer")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("repaired".to_owned())
+        );
+    }
+
+    #[test]
+    fn store_failure_does_not_permanently_disable_later_writes() {
+        let _lock = TEST_ENV.lock().expect("test environment lock");
+        let _root = TestConfigRoot::enter();
+        let peer_id = format!("retry-store-test-{}", rand::random::<u64>());
+        let mut handler = LoginConfigHandler::default();
+        handler.id = peer_id.clone();
+        handler.profile_id = "../invalid".to_owned();
+        handler.config_writable.store(true, Ordering::Relaxed);
+        let mut peer = PeerConfig::default();
+        peer.options.insert("alias".to_owned(), "retry".to_owned());
+        handler.save_config(peer.clone());
+        assert!(handler.config_writable.load(Ordering::Relaxed));
+        assert_ne!(
+            handler.config.options.get("alias"),
+            Some(&"retry".to_owned())
+        );
+
+        handler.profile_id = "home".to_owned();
+        handler.save_config(peer);
+
+        assert_eq!(
+            PeerConfig::try_load_for("home", &peer_id)
+                .expect("load retried peer")
+                .and_then(|peer| peer.options.get("alias").cloned()),
+            Some("retry".to_owned())
+        );
+    }
 }
