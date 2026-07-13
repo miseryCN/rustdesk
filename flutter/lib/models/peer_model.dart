@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
@@ -343,6 +344,7 @@ class RecentPeersModel extends Peers {
   int _epoch = 0;
   String? _profileId;
   final Map<String, Future<RecentPeersRefreshReceipt>> _inFlight = {};
+  final Map<String, _QueuedRecentPeersRefresh> _queuedRefreshes = {};
   bool _disposed = false;
 
   @visibleForTesting
@@ -366,6 +368,31 @@ class RecentPeersModel extends Peers {
       return invalidateAndRefresh(profileId);
     }
     return _startLoad(profileId, _epoch, preserveOnline: true);
+  }
+
+  /// Refreshes after a peer config was stored. If a snapshot for this profile
+  /// is already loading, one follow-up snapshot is queued so the store event
+  /// cannot be satisfied by a stale response.
+  Future<RecentPeersRefreshReceipt> refreshAfterChange(String profileId) {
+    if (_disposed) return Future.value(_receipt(profileId, _epoch, false));
+    if (_profileId != profileId) {
+      return invalidateAndRefresh(profileId);
+    }
+    final epoch = _epoch;
+    final key = _requestKey(profileId, epoch);
+    if (!_inFlight.containsKey(key)) {
+      return _startLoad(profileId, epoch, preserveOnline: true);
+    }
+    final queued = _queuedRefreshes[key];
+    if (queued != null) return queued.completer.future;
+
+    final completer = Completer<RecentPeersRefreshReceipt>();
+    _queuedRefreshes[key] = _QueuedRecentPeersRefresh(
+      profileId: profileId,
+      epoch: epoch,
+      completer: completer,
+    );
+    return completer.future;
   }
 
   Future<RecentPeersRefreshReceipt> refreshSafely(String profileId) async {
@@ -395,18 +422,44 @@ class RecentPeersModel extends Peers {
 
   Future<RecentPeersRefreshReceipt> _startLoad(String profileId, int epoch,
       {required bool preserveOnline}) {
-    final key = '$epoch\u0000$profileId';
+    final key = _requestKey(profileId, epoch);
     final pending = _inFlight[key];
     if (pending != null) return pending;
 
     late final Future<RecentPeersRefreshReceipt> tracked;
-    tracked = _load(profileId, epoch, preserveOnline).whenComplete(() {
-      if (identical(_inFlight[key], tracked)) {
-        _inFlight.remove(key);
-      }
-    });
+    tracked = _load(profileId, epoch, preserveOnline);
     _inFlight[key] = tracked;
+    tracked.then<void>(
+      (_) => _finishLoad(key, profileId, epoch, preserveOnline, tracked),
+      onError: (_, __) =>
+          _finishLoad(key, profileId, epoch, preserveOnline, tracked),
+    );
     return tracked;
+  }
+
+  String _requestKey(String profileId, int epoch) => '$epoch\u0000$profileId';
+
+  void _finishLoad(
+    String key,
+    String profileId,
+    int epoch,
+    bool preserveOnline,
+    Future<RecentPeersRefreshReceipt> completed,
+  ) {
+    if (!identical(_inFlight[key], completed)) return;
+    _inFlight.remove(key);
+
+    final queued = _queuedRefreshes.remove(key);
+    if (queued == null) return;
+    if (_disposed || _profileId != profileId || _epoch != epoch) {
+      queued.completer
+          .complete(_receipt(queued.profileId, queued.epoch, false));
+      return;
+    }
+    _startLoad(profileId, epoch, preserveOnline: preserveOnline).then(
+      queued.completer.complete,
+      onError: queued.completer.completeError,
+    );
   }
 
   Future<RecentPeersRefreshReceipt> _load(
@@ -444,8 +497,25 @@ class RecentPeersModel extends Peers {
     _disposed = true;
     _epoch += 1;
     _inFlight.clear();
+    for (final queued in _queuedRefreshes.values) {
+      queued.completer
+          .complete(_receipt(queued.profileId, queued.epoch, false));
+    }
+    _queuedRefreshes.clear();
     super.dispose();
   }
+}
+
+class _QueuedRecentPeersRefresh {
+  const _QueuedRecentPeersRefresh({
+    required this.profileId,
+    required this.epoch,
+    required this.completer,
+  });
+
+  final String profileId;
+  final int epoch;
+  final Completer<RecentPeersRefreshReceipt> completer;
 }
 
 class _RecentPeersSnapshot {

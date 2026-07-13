@@ -403,6 +403,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
             errorText: _nameError,
           ),
         ),
+        const SizedBox(height: 12),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -437,6 +438,7 @@ class _ServerProfileEditorState extends State<_ServerProfileEditor> {
             ),
           ],
         ),
+        const SizedBox(height: 12),
         TextField(
           key: const Key('profile-key'),
           controller: _keyController,

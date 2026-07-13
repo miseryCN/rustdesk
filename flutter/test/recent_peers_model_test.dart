@@ -88,6 +88,29 @@ void main() {
     await Future.wait([first, second]);
   });
 
+  test('a peer change during a same-profile load is refreshed afterwards',
+      () async {
+    final initialLoad = Completer<String>();
+    final changedPeers = Completer<String>();
+    var calls = 0;
+    final model = RecentPeersModel(loader: (_) {
+      calls += 1;
+      return calls == 1 ? initialLoad.future : changedPeers.future;
+    });
+
+    final initialRefresh = model.refresh('home');
+    final changedRefresh = model.refreshAfterChange('home');
+    expect(calls, 1);
+
+    initialLoad.complete(_snapshot('home', const []));
+    await initialRefresh;
+    expect(calls, 2);
+
+    changedPeers.complete(_snapshot('home', ['first-peer']));
+    await changedRefresh;
+    expect(model.peers.map((peer) => peer.id), ['first-peer']);
+  });
+
   test('the load future completes only after the snapshot is applied',
       () async {
     final model = RecentPeersModel(
