@@ -939,6 +939,9 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
+    if !software_updates_enabled() {
+        return;
+    }
     if is_custom_client() {
         return;
     }
@@ -946,6 +949,20 @@ pub fn check_software_update() {
     if config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
         std::thread::spawn(move || allow_err!(do_check_software_update()));
     }
+}
+
+#[inline]
+pub fn software_updates_enabled() -> bool {
+    software_updates_enabled_for_desktop(cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux",
+    )))
+}
+
+#[inline]
+fn software_updates_enabled_for_desktop(is_desktop: bool) -> bool {
+    !is_desktop
 }
 
 // No need to check `danger_accept_invalid_cert` for now.
@@ -1025,6 +1042,22 @@ pub fn get_full_name() -> String {
 
 pub fn is_setup(name: &str) -> bool {
     name.to_lowercase().ends_with("install.exe")
+}
+
+#[cfg(test)]
+mod self_hosted_update_tests {
+    use super::{software_updates_enabled, software_updates_enabled_for_desktop};
+
+    #[test]
+    fn software_updates_are_disabled_for_self_hosted_builds() {
+        assert!(!software_updates_enabled());
+    }
+
+    #[test]
+    fn only_desktop_builds_disable_software_updates() {
+        assert!(!software_updates_enabled_for_desktop(true));
+        assert!(software_updates_enabled_for_desktop(false));
+    }
 }
 
 pub fn get_custom_rendezvous_server(custom: String) -> String {

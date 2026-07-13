@@ -1340,7 +1340,7 @@ class FfiModel with ChangeNotifier {
     cachedPeerData.peerInfo.remove('resolutions');
 
     // Recent peer is updated by handle_peer_info(ui_session_interface.rs) --> handle_peer_info(client.rs) --> save_config(client.rs)
-    parent.target?.refreshRecentPeersSafely();
+    parent.target?.refreshRecentPeersSafely(afterPeerChange: true);
 
     parent.target?.dialogManager.dismissAll();
     _pi.version = evt['version'];
@@ -3786,7 +3786,7 @@ class FFI {
     }
   }
 
-  Future<void> refreshRecentPeersSafely() async {
+  Future<void> refreshRecentPeersSafely({bool afterPeerChange = false}) async {
     try {
       if (!isDesktop) {
         await bind.mainLoadRecentPeers();
@@ -3800,7 +3800,9 @@ class FFI {
         reportRecentPeersLoadFailure();
         return;
       }
-      final receipt = await recentPeersModel.refreshSafely(profileId);
+      final receipt = afterPeerChange
+          ? await recentPeersModel.refreshAfterChange(profileId)
+          : await recentPeersModel.refreshSafely(profileId);
       markRecentPeersFreshFromReceipt(
         recentPeers: recentPeersModel,
         serverProfiles: serverProfileModel,
