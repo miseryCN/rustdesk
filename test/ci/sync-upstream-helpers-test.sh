@@ -55,7 +55,29 @@ test_sync_mr_parser_needs_no_jq() {
     'only upstream sync MRs should be selected without jq'
 }
 
+test_upstream_fetch_retries_transient_failure() {
+  local fake_bin attempts_file
+  fake_bin="$(mktemp -d)"
+  attempts_file="$fake_bin/attempts"
+  trap 'rm -rf "$fake_bin"' RETURN
+  cat >"$fake_bin/git" <<EOF
+#!/usr/bin/env bash
+attempts_file="$attempts_file"
+attempts=0
+[[ -f "\$attempts_file" ]] && attempts="\$(cat "\$attempts_file")"
+attempts=\$((attempts + 1))
+printf '%s' "\$attempts" >"\$attempts_file"
+[[ "\$attempts" -ge 2 ]]
+EOF
+  chmod +x "$fake_bin/git"
+
+  PATH="$fake_bin:$PATH" UPSTREAM_FETCH_ATTEMPTS=2 UPSTREAM_FETCH_RETRY_DELAY_SECONDS=0 \
+    fetch_upstream_ref_with_retry upstream refs/heads/master:refs/remotes/upstream/master
+  assert_eq '2' "$(cat "$attempts_file")" 'transient upstream failure should be retried once'
+}
+
 test_sync_branch_name_uses_pipeline_id
 test_submodule_validation_stops_on_unavailable_commit
 test_sync_mr_parser_needs_no_jq
+test_upstream_fetch_retries_transient_failure
 printf 'sync-upstream helper tests passed\n'
