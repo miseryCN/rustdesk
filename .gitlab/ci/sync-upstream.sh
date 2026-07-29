@@ -31,7 +31,7 @@ git config user.name "RustDesk upstream sync bot"
 git config user.email "rustdesk-upstream-sync@noreply.local"
 git remote remove upstream 2>/dev/null || true
 git remote add upstream "$upstream_url"
-git -c fetch.recurseSubmodules=false fetch --no-tags upstream "refs/heads/${target_branch}:refs/remotes/upstream/${target_branch}"
+fetch_upstream_ref_with_retry upstream "refs/heads/${target_branch}:refs/remotes/upstream/${target_branch}"
 git -c fetch.recurseSubmodules=false fetch origin "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
 
 base_ref="origin/${target_branch}"

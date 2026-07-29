@@ -11,6 +11,31 @@ verify_submodules_are_fetchable() {
   git submodule update --init --recursive
 }
 
+fetch_upstream_ref_with_retry() {
+  local remote="$1"
+  local refspec="$2"
+  local max_attempts="${UPSTREAM_FETCH_ATTEMPTS:-3}"
+  local retry_delay="${UPSTREAM_FETCH_RETRY_DELAY_SECONDS:-5}"
+  local attempt=1
+
+  while true; do
+    if git -c fetch.recurseSubmodules=false fetch --no-tags "$remote" "$refspec"; then
+      return 0
+    fi
+
+    if (( attempt >= max_attempts )); then
+      printf 'Failed to fetch %s from %s after %s attempts.\n' \
+        "$refspec" "$remote" "$attempt" >&2
+      return 1
+    fi
+
+    printf 'Fetch attempt %s/%s failed; retrying in %ss.\n' \
+      "$attempt" "$max_attempts" "$retry_delay" >&2
+    sleep "$retry_delay"
+    ((attempt++))
+  done
+}
+
 sync_merge_request_iids_from_json() {
   local merge_requests="$1"
   printf '%s\n' "$merge_requests" \
