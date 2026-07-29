@@ -7,6 +7,9 @@ readonly target_branch="${UPSTREAM_TARGET_BRANCH:-master}"
 readonly codex_model="${CODEX_MODEL:-gpt-5.6-terra}"
 readonly codex_reasoning_effort="${CODEX_REASONING_EFFORT:-high}"
 readonly report_path="upstream-sync-report.md"
+readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+source "$script_dir/sync-upstream-helpers.sh"
 
 require_variable() {
   local variable_name="$1"
@@ -18,21 +21,24 @@ require_variable() {
 
 require_variable CI_SERVER_HOST
 require_variable CI_PROJECT_PATH
+require_variable CI_API_V4_URL
+require_variable CI_PROJECT_ID
 require_variable UPSTREAM_SYNC_USERNAME
 require_variable UPSTREAM_SYNC_TOKEN
+require_variable CI_PIPELINE_ID
 
 git config user.name "RustDesk upstream sync bot"
 git config user.email "rustdesk-upstream-sync@noreply.local"
 git remote remove upstream 2>/dev/null || true
 git remote add upstream "$upstream_url"
-git fetch --no-tags upstream "refs/heads/${target_branch}:refs/remotes/upstream/${target_branch}"
-git fetch origin "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
+git -c fetch.recurseSubmodules=false fetch --no-tags upstream "refs/heads/${target_branch}:refs/remotes/upstream/${target_branch}"
+git -c fetch.recurseSubmodules=false fetch origin "refs/heads/${target_branch}:refs/remotes/origin/${target_branch}"
 
 base_ref="origin/${target_branch}"
 upstream_ref="upstream/${target_branch}"
 upstream_sha="$(git rev-parse "$upstream_ref")"
 upstream_short_sha="${upstream_sha:0:12}"
-sync_branch="sync/upstream-${upstream_short_sha}"
+sync_branch="$(sync_branch_name "$upstream_sha" "$CI_PIPELINE_ID")"
 
 if git merge-base --is-ancestor "$upstream_ref" "$base_ref"; then
   printf '# 上游同步报告\n\n官方提交 `%s` 已包含在 `%s` 中，无需创建 Merge Request。\n' \
@@ -69,9 +75,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
   git commit -m "fix: 适配 RustDesk 上游 ${upstream_short_sha}"
 fi
 
+verify_submodules_are_fetchable
+
 git remote set-url origin "http://${UPSTREAM_SYNC_USERNAME}:${UPSTREAM_SYNC_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
 git push origin "HEAD:refs/heads/${sync_branch}" \
   -o merge_request.create \
   -o "merge_request.target=${target_branch}" \
   -o "merge_request.title=Draft: 同步 RustDesk 上游 ${upstream_short_sha}" \
   -o "merge_request.description=由定时同步任务创建。请审查 Codex 报告与 CI 结果后再合并。"
+
+close_superseded_sync_merge_requests "$sync_branch"

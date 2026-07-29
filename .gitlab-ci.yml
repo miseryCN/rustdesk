@@ -37,11 +37,15 @@ verify-source:
   stage: verify
   tags:
     - gitlab--duo
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "master"'
   script:
     - |
+      git submodule sync --recursive
+      git submodule update --init --recursive
       base_sha="${CI_MERGE_REQUEST_DIFF_BASE_SHA:-${CI_COMMIT_BEFORE_SHA:-}}"
       if [[ -n "$base_sha" ]] && git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
         git diff --check "$base_sha" "$CI_COMMIT_SHA"
