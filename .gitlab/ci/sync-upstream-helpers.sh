@@ -11,6 +11,20 @@ verify_submodules_are_fetchable() {
   git submodule update --init --recursive
 }
 
+sync_merge_request_iids_from_json() {
+  local merge_requests="$1"
+  printf '%s\n' "$merge_requests" \
+    | sed 's/},{"id":/}\n{"id":/g' \
+    | while IFS= read -r merge_request; do
+        case "$merge_request" in
+          *'"source_branch":"sync/upstream-'*)
+            printf '%s\n' "$merge_request" \
+              | sed -n 's/.*"iid":\([0-9][0-9]*\).*/\1/p'
+            ;;
+        esac
+      done
+}
+
 close_superseded_sync_merge_requests() {
   local sync_branch="$1"
   local endpoint="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests"
@@ -19,8 +33,16 @@ close_superseded_sync_merge_requests() {
   merge_requests="$(curl --fail --silent --show-error \
     --header "PRIVATE-TOKEN: ${UPSTREAM_SYNC_TOKEN}" \
     "${endpoint}?state=opened&target_branch=${target_branch}&per_page=100")"
-  current_iid="$(jq -r --arg branch "$sync_branch" \
-    '.[] | select(.source_branch == $branch) | .iid' <<<"$merge_requests")"
+  current_iid="$(printf '%s\n' "$merge_requests" \
+    | sed 's/},{"id":/}\n{"id":/g' \
+    | while IFS= read -r merge_request; do
+        case "$merge_request" in
+          *"\"source_branch\":\"${sync_branch}\""*)
+            printf '%s\n' "$merge_request" \
+              | sed -n 's/.*"iid":\([0-9][0-9]*\).*/\1/p'
+            ;;
+        esac
+      done)"
 
   if [[ -z "$current_iid" ]]; then
     printf 'Could not find the Merge Request for %s after push.\n' "$sync_branch" >&2
@@ -35,10 +57,6 @@ close_superseded_sync_merge_requests() {
       --data-urlencode 'state_event=close' \
       "${endpoint}/${stale_iid}" >/dev/null
     printf 'Closed superseded upstream sync MR !%s.\n' "$stale_iid"
-  done < <(jq -r --arg current_iid "$current_iid" '
-    .[]
-    | select(.source_branch | startswith("sync/upstream-"))
-    | select((.iid | tostring) != $current_iid)
-    | .iid
-  ' <<<"$merge_requests")
+  done < <(sync_merge_request_iids_from_json "$merge_requests" \
+    | grep -Fxv "$current_iid" || true)
 }

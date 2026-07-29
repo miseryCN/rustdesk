@@ -27,11 +27,6 @@ require_variable UPSTREAM_SYNC_USERNAME
 require_variable UPSTREAM_SYNC_TOKEN
 require_variable CI_PIPELINE_ID
 
-if ! command -v jq >/dev/null 2>&1; then
-  printf 'jq is required to maintain the upstream sync Merge Request queue.\n' >&2
-  exit 1
-fi
-
 git config user.name "RustDesk upstream sync bot"
 git config user.email "rustdesk-upstream-sync@noreply.local"
 git remote remove upstream 2>/dev/null || true

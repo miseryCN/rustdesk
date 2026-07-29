@@ -45,6 +45,17 @@ EOF
   fi
 }
 
+test_sync_mr_parser_needs_no_jq() {
+  local merge_requests
+  merge_requests='[{"id":10,"iid":4,"source_branch":"sync/upstream-old-1"},{"id":11,"iid":5,"source_branch":"fix/other"},{"id":12,"iid":6,"source_branch":"sync/upstream-new-2"}]'
+
+  assert_eq \
+    $'4\n6' \
+    "$(sync_merge_request_iids_from_json "$merge_requests")" \
+    'only upstream sync MRs should be selected without jq'
+}
+
 test_sync_branch_name_uses_pipeline_id
 test_submodule_validation_stops_on_unavailable_commit
+test_sync_mr_parser_needs_no_jq
 printf 'sync-upstream helper tests passed\n'
